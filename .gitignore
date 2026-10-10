@@ -1,0 +1,7 @@
+/build/
+/dist/
+*.o
+*.exe
+*.dll
+*.log
+mkwrap_reg.ini

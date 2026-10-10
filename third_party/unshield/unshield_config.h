@@ -1,0 +1,10 @@
+#define HAVE_STDINT_H 1
+#define HAVE_STDLIB_H 1
+#define HAVE_STRING_H 1
+#define HAVE_STDBOOL_H 1
+#define HAVE_INTTYPES_H 1
+#define USE_OUR_OWN_MD5 1
+#define SIZE_FORMAT "zu"
+#define PACKAGE "unshield"
+#define VERSION "1.5.1"
+#define __USE_MINGW_ANSI_STDIO 1

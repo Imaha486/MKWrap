@@ -1,0 +1,4 @@
+* text=auto eol=lf
+*.manifest text eol=crlf
+*.rc text eol=crlf
+docs/README_release.txt text eol=crlf

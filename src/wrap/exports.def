@@ -1,0 +1,19 @@
+LIBRARY mkwrap
+EXPORTS
+    DirectInputCreateA = exp_DirectInputCreateA@16
+    DirectInputCreateW = exp_DirectInputCreateW@16
+    DirectInputCreateEx = exp_DirectInputCreateEx@20
+    DllCanUnloadNow = exp_DllCanUnloadNow@0 PRIVATE
+    DllGetClassObject = exp_DllGetClassObject@12 PRIVATE
+    DllRegisterServer = exp_DllRegisterServer@0 PRIVATE
+    DllUnregisterServer = exp_DllUnregisterServer@0 PRIVATE
+    DirectDrawCreate = exp_DirectDrawCreate@12
+    DirectDrawCreateEx = exp_DirectDrawCreateEx@16
+    DirectDrawEnumerateA = exp_DirectDrawEnumerateA@8
+    DirectDrawEnumerateW = exp_DirectDrawEnumerateW@8
+    DirectDrawEnumerateExA = exp_DirectDrawEnumerateExA@12
+    DirectDrawEnumerateExW = exp_DirectDrawEnumerateExW@12
+    DirectDrawCreateClipper = exp_DirectDrawCreateClipper@12
+    AcquireDDThreadLock = exp_AcquireDDThreadLock@0
+    ReleaseDDThreadLock = exp_ReleaseDDThreadLock@0
+    MkwDump = MkwDump@16
