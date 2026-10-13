@@ -1,5 +1,7 @@
 # MKWrap
 
+<img src="https://i486.mods.jp/ichild/wp-content/uploads/2026/10/kikikaikai.jpg">
+
 メディアカイト (Media Kite) から発売された、アーケード／ファミコン移植 PC ソフト (1999～2003 年頃) を
 **Windows 10 / 11 で快適に遊ぶため**のツール一式です。
 
