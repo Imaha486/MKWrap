@@ -5,6 +5,12 @@ on:
     branches: [ main ]
     tags: [ 'v*' ]
   pull_request:
+  workflow_dispatch:
+
+# タグの実行で Release にファイルを添付するため、リポジトリへの書き込みを許可する
+# (新しいリポジトリでは GITHUB_TOKEN が既定で読み取り専用のため、これが無いと Release の手順で失敗する)
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -14,7 +20,8 @@ jobs:
       - name: Install MinGW-w64
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-mingw-w64-i686 libz-mingw-w64-dev zip
+          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-i686 binutils-mingw-w64-i686 libz-mingw-w64-dev make zip
+          i686-w64-mingw32-gcc --version
       - name: Build
         run: make dist
       - uses: actions/upload-artifact@v4
