@@ -49,6 +49,7 @@
 | Pad | 0 | コントローラ番号 (0～3) |
 | Deadzone | 35 | アナログスティックの遊び (%) |
 | StickDirections | 8 | スティックを 8 方向 / 4 方向に変換 |
+| KeyboardExclusive | 0 | 0 = ゲームが DirectInput のキーボードを排他モードで使おうとしても非排他にする (Alt+Enter などを効かせるため) |
 | HideJoysticks | 1 | ゲームから DirectInput / winmm のジョイスティックを隠す (二重入力防止) |
 | PostKeyMessages | 2 | キー入力メッセージも送る。0 = 送らない、1 = すべて、2 = F1～F12 のみ |
 | BackgroundInput | 0 | 1 = 窓が非アクティブでも入力を渡す |

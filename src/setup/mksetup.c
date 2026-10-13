@@ -332,11 +332,27 @@ static int find_game_exe(const wchar_t *dir, wchar_t *out, int depth)
     return out[0] != 0;
 }
 
+static int file_contains(const wchar_t *path, const char *needle)
+{
+    HANDLE h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    HANDLE m; const BYTE *b; DWORD size, i, n = (DWORD)strlen(needle); int found = 0;
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    size = GetFileSize(h, NULL);
+    m = CreateFileMappingW(h, NULL, PAGE_READONLY, 0, 0, NULL);
+    b = m ? (const BYTE *)MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0) : NULL;
+    if (b) for (i = 0; i + n <= size && !found; i++) if (b[i] == (BYTE)needle[0] && !memcmp(b + i, needle, n)) found = 1;
+    if (b) UnmapViewOfFile(b);
+    if (m) CloseHandle(m);
+    CloseHandle(h);
+    return found;
+}
+
 static const mk_profile_t *profile_for(const wchar_t *exe)
 {
     const wchar_t *b = wcsrchr(exe, L'\\'); size_t i;
     b = b ? b + 1 : exe;
     for (i = 0; i < sizeof g_profiles / sizeof g_profiles[0]; i++) if (!_wcsicmp(b, g_profiles[i].exe)) return &g_profiles[i];
+    if (file_contains(exe, "SEGA MEGADRIVE")) return &g_sega_profile;   /* セガゲーム本舗の他のタイトル */
     return &g_generic_profile;
 }
 
@@ -390,8 +406,8 @@ static int write_ini(const wchar_t *path, const mk_profile_t *p, const wchar_t *
         L"; GameHz = ゲームが本来動いている周期, TargetHz = 合わせたい周期 (アーケードの多くは 60.606)\r\n"
         L"; RefreshRate = 画面転送の上限 (0 = 制限しない)\r\n");
     write_utf16(h, p->timing);
+    if (!wcsstr(p->timing, L"RefreshRate=")) write_utf16(h, L"RefreshRate=0\r\n");
     write_utf16(h,
-        L"RefreshRate=0\r\n"
         L"; 1 = GetTickCount/timeGetTime を 1ms 精度にする (Windows 標準は約 16ms 刻み)\r\n"
         L"PreciseTimer=1\r\n"
         L"\r\n[Input]\r\n"
@@ -485,6 +501,25 @@ static int run_job(const wchar_t *src, const wchar_t *dst, int wrap)
     if (!mk_dir_exists(src)) { mk_log(L"展開元が見つかりません。\r\n"); return -1; }
     g_srcroot = src;
     if (!find_installer(src, &f, 2)) {
+        /* インストーラを持たず CD から直接起動する形式 (セガゲーム本舗など): ゲームのフォルダをそのままコピー */
+        wchar_t exe[MAX_PATH * 2], root[4] = { src[0], L':', L'\\', 0 }, ar[MAX_PATH * 2];
+        int cdrom, autorun;
+        cdrom = wcslen(src) >= 2 && src[1] == L':' && GetDriveTypeW(root) == DRIVE_CDROM;
+        mk_path_join(ar, MAX_PATH * 2, src, L"autorun.inf");
+        autorun = mk_file_exists(ar);
+        if ((cdrom || autorun) && dst && dst[0] && _wcsicmp(src, dst) && find_game_exe(src, exe, 1)) {
+            wchar_t *p, gsrc[MAX_PATH * 2]; int n = 0, r2;
+            wcscpy(gsrc, exe); p = wcsrchr(gsrc, L'\\'); if (p) *p = 0;
+            mk_log(L"インストーラの無い CD です (CD から直接起動する形式)。ゲームのフォルダをコピーします。\r\n");
+            mk_log(L"コピー元: %ls\r\n展開先: %ls\r\n", gsrc, dst);
+            if (!mk_mkdirs(dst)) { mk_log(L"展開先フォルダを作成できません。\r\n"); return -1; }
+            r2 = copy_tree(gsrc, dst, 0, &n);
+            mk_log(L"%d 個のファイルをコピーしました。\r\n", n);
+            if (n == 0) return -1;
+            mk_log(L"レジストリやスタートメニューは変更していません。\r\n");
+            if (wrap) deploy_wrapper(dst);
+            return r2 < 0 ? -1 : 0;
+        }
         mk_log(L"インストーラが見つからないため、展開済みのゲームフォルダとして扱います。\r\n");
         return wrap ? deploy_wrapper(src) : 0;
     }

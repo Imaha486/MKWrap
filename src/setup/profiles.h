@@ -20,6 +20,22 @@ typedef struct {
 #define STD_DIR DIR_KEYS(L"UP", L"DOWN", L"LEFT", L"RIGHT")
 #define STD_SYS L"Back=F2\r\nStart=F3\r\nRB=F4\r\n"
 
+/* セガゲーム本舗 (メディアカイト / 2004 年、Gens 系のメガドライブエミュレータ) */
+#define SEGA_TIMING \
+    L"; メガドライブ (NTSC) は 59.92Hz。ゲームは垂直同期待ちで速度を決めるので、その周期を合わせます\r\n" \
+    L"RefreshRate=59.922\r\n"
+#define SEGA_INPUT \
+    STD_DIR \
+    L"; キーボード (1P): A=J B=K C=L START=Enter / ESC=ポーズ TAB=リセット Shift+F5=ステート保存 Shift+F8=ステート読込\r\n" \
+    L"; パッドはメガドライブの A/B/C の並びに合わせて X=A A=B B=C。Y も A ボタン\r\n" \
+    L"X=J\r\nA=K\r\nB=L\r\nY=J\r\nStart=ENTER\r\nBack=ESC\r\n"
+#define SEGA_NOTE \
+    L"; セガゲーム本舗のタイトルです。CD から直接起動する形式のため、ゲームのフォルダをコピーして使います。\r\n" \
+    L"; セーブとステート保存はマイドキュメント\\sega\\gamehompo に作られます。\r\n"
+#define SEGA_DISPLAY \
+    L"; 元は起動時に画面を 640x480・16 ビットカラーに切り替えます。ここでは枠付きの窓で表示します (Alt+Enter で全画面)\r\n" \
+    L"ModeChangeFullscreen=0\r\n"
+
 static const mk_profile_t g_profiles[] = {
     /* ---- 第1弾 ---- */
     { L"lr1500.exe", L"リブルラブル",
@@ -98,6 +114,12 @@ static const mk_profile_t g_profiles[] = {
       L"; CD の中身の場所 (空欄 = このフォルダ)。ドライブ文字は空欄なら空いている文字を自動で使います\r\n"
       L"Path=\r\nLetter=\r\nLabel=POPNPOP\r\n",
       L"; 元は全画面専用のため、枠付きの窓で表示します (Alt+Enter で全画面)\r\nModeChangeFullscreen=0\r\n" },
+    /* ---- 第3弾: セガゲーム本舗 ---- */
+    { L"gunstar.exe", L"ガンスターヒーローズ (セガゲーム本舗)", SEGA_TIMING, SEGA_INPUT, L"", L"", SEGA_NOTE, NULL, SEGA_DISPLAY },
+};
+
+static const mk_profile_t g_sega_profile = {
+    L"", L"セガゲーム本舗 (メガドライブ)", SEGA_TIMING, SEGA_INPUT, L"", L"", SEGA_NOTE, NULL, SEGA_DISPLAY
 };
 
 static const mk_profile_t g_generic_profile = {

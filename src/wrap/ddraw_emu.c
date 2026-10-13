@@ -63,6 +63,8 @@ struct Surf {
     BYTE *shadow; int sh_w, sh_h, sh_pitch; /* 窓モードプライマリの Lock 用 */
     DWORD uniq;
     double last_present;
+    int ext;              /* SetSurfaceDesc でアプリのメモリを使っている (DIB を持たない) */
+    HDC xdc; HBITMAP xbmp, xold; BYTE *xbits; /* ext 用 GetDC の一時 DIB */
 };
 
 static void **vt_dd[4], **vt_s[5], **vt_pal, **vt_clip;
@@ -93,6 +95,7 @@ static void default_masks(int bpp, DWORD *r, DWORD *g, DWORD *b)
 static int display_bpp(DDraw *d)
 {
     if (d && d->mode_bpp) return d->mode_bpp;
+    if (g_fake_mode_bpp >= 8) return g_fake_mode_bpp;   /* ChangeDisplaySettings で色数を変えたつもりのゲーム */
     return g_cfg.desktop_bpp;
 }
 
@@ -508,6 +511,8 @@ static void free_surf(Surf *s)
     if (s->back && s->back != s && s->back->front == s) { Surf *b = s->back; s->back = NULL; b->front = NULL; free_surf(b); }
     if (s->dc) { SelectObject(s->dc, s->oldbmp); DeleteDC(s->dc); }
     if (s->bmp) DeleteObject(s->bmp);
+    if (s->xdc) { SelectObject(s->xdc, s->xold); DeleteDC(s->xdc); }
+    if (s->xbmp) DeleteObject(s->xbmp);
     if (s->pal) s->pal->ref--;
     if (s->clip) s->clip->ref--;
     free(s->shadow);
@@ -612,9 +617,9 @@ static HRESULT WINAPI s_EnumOverlayZOrders(void *This, DWORD fl, void *ctx, void
 
 static void swap_buffers(Surf *a, Surf *b)
 {
-    HDC dc = a->dc; HBITMAP bm = a->bmp, ob = a->oldbmp; BYTE *bits = a->bits;
-    a->dc = b->dc; a->bmp = b->bmp; a->oldbmp = b->oldbmp; a->bits = b->bits;
-    b->dc = dc; b->bmp = bm; b->oldbmp = ob; b->bits = bits;
+    HDC dc = a->dc; HBITMAP bm = a->bmp, ob = a->oldbmp; BYTE *bits = a->bits; int pitch = a->pitch, ext = a->ext;
+    a->dc = b->dc; a->bmp = b->bmp; a->oldbmp = b->oldbmp; a->bits = b->bits; a->pitch = b->pitch; a->ext = b->ext;
+    b->dc = dc; b->bmp = bm; b->oldbmp = ob; b->bits = bits; b->pitch = pitch; b->ext = ext;
 }
 static HRESULT WINAPI s_Flip(void *This, void *target, DWORD fl)
 {
@@ -680,6 +685,24 @@ static HRESULT WINAPI s_GetDC(void *This, HDC *out)
         if (!w) return DDERR_GENERIC;
         *out = vwin_canvas_dc(w); s->dc_out = 1; return DD_OK;
     }
+    if (s->ext) {
+        /* アプリのメモリを使うサーフェス: 一時 DIB にコピーして渡し、ReleaseDC で書き戻す */
+        int y, row = ((s->w * s->bpp + 31) / 32) * 4;
+        if (!s->xdc) {
+            struct { BITMAPINFOHEADER h; DWORD m[256]; } bi; HDC sdc;
+            memset(&bi, 0, sizeof bi);
+            bi.h.biSize = sizeof bi.h; bi.h.biWidth = s->w; bi.h.biHeight = -s->h; bi.h.biPlanes = 1; bi.h.biBitCount = (WORD)s->bpp;
+            if (s->bpp == 16 || s->bpp == 32) { bi.h.biCompression = BI_BITFIELDS; bi.m[0] = s->rmask; bi.m[1] = s->gmask; bi.m[2] = s->bmask; }
+            sdc = GetDC(NULL); s->xdc = CreateCompatibleDC(sdc); ReleaseDC(NULL, sdc);
+            s->xbmp = CreateDIBSection(s->xdc, (BITMAPINFO *)&bi, DIB_RGB_COLORS, (void **)&s->xbits, NULL, 0);
+            if (!s->xbmp) { DeleteDC(s->xdc); s->xdc = NULL; return DDERR_GENERIC; }
+            s->xold = (HBITMAP)SelectObject(s->xdc, s->xbmp);
+        }
+        GdiFlush();
+        for (y = 0; y < s->h; y++) memcpy(s->xbits + (size_t)y * row, s->bits + (size_t)y * s->pitch, (size_t)(s->w * s->bpp / 8));
+        *out = s->xdc; s->dc_out = 1;
+        return DD_OK;
+    }
     if (!s->dc) return DDERR_GENERIC;
     surf_sync_palette(s);
     GdiFlush();
@@ -691,6 +714,10 @@ static HRESULT WINAPI s_ReleaseDC(void *This, HDC dc)
     Surf *s = SELF(Surf, This);
     (void)dc;
     GdiFlush();
+    if (s->ext && s->xdc && s->dc_out) {
+        int y, row = ((s->w * s->bpp + 31) / 32) * 4;
+        for (y = 0; y < s->h; y++) memcpy(s->bits + (size_t)y * s->pitch, s->xbits + (size_t)y * row, (size_t)(s->w * s->bpp / 8));
+    }
     s->dc_out = 0;
     if (s->primary) surf_present(s, 0);
     return DD_OK;
@@ -885,7 +912,49 @@ static HRESULT WINAPI s_GetDDInterface(void *This, void **out)
     s->dd->ref++; *out = dd_iface(s->dd, 1); return DD_OK;
 }
 static HRESULT WINAPI s_PageLock(void *This, DWORD fl) { (void)This; (void)fl; return DD_OK; }
-static HRESULT WINAPI s_SetSurfaceDesc(void *This, void *desc, DWORD fl) { (void)This; (void)desc; (void)fl; return DDERR_UNSUPPORTED; }
+/* アプリが用意したメモリをサーフェスの実体にする (Gens 系エミュレータが使う) */
+static HRESULT WINAPI s_SetSurfaceDesc(void *This, void *desc, DWORD fl)
+{
+    Surf *s = SELF(Surf, This);
+    int v = ((IFACE *)This)->ver;
+    DDSURFACEDESC2 d;
+    int bpp = s->bpp; DWORD rm = s->rmask, gm = s->gmask, bm = s->bmask;
+    (void)fl;
+    if (!desc) return DDERR_INVALIDPARAMS;
+    if (v >= 4) d = *(DDSURFACEDESC2 *)desc;
+    else desc1_to_desc2((DDSURFACEDESC *)desc, &d);
+    if (s->primary || s->virt) return DDERR_INVALIDSURFACETYPE;
+    if (!(d.dwFlags & DDSD_LPSURFACE) || !d.lpSurface) return DDERR_INVALIDPARAMS;
+    if (d.dwFlags & DDSD_PIXELFORMAT) {
+        bpp = (int)d.ddpfPixelFormat.dwRGBBitCount;
+        rm = d.ddpfPixelFormat.dwRBitMask; gm = d.ddpfPixelFormat.dwGBitMask; bm = d.ddpfPixelFormat.dwBBitMask;
+        if (bpp == 16 && !rm) { rm = 0xF800; gm = 0x07E0; bm = 0x001F; }
+        if (bpp == 32 && !rm) { rm = 0xFF0000; gm = 0xFF00; bm = 0xFF; }
+    }
+    /* 自前の DIB を解放してアプリのメモリに切り替える */
+    if (s->dc) { SelectObject(s->dc, s->oldbmp); DeleteDC(s->dc); s->dc = NULL; }
+    if (s->bmp) { DeleteObject(s->bmp); s->bmp = NULL; }
+    if (s->xdc) { SelectObject(s->xdc, s->xold); DeleteDC(s->xdc); s->xdc = NULL; }
+    if (s->xbmp) { DeleteObject(s->xbmp); s->xbmp = NULL; }
+    if (d.dwFlags & DDSD_PITCH) {
+        /* ピッチが形式より狭い (本物の DirectDraw なら失敗する) 場合はピッチから推定 (16bpp = RGB565) */
+        int w0 = (d.dwFlags & DDSD_WIDTH) ? (int)d.dwWidth : s->w;
+        if (w0 > 0 && d.lPitch > 0 && d.lPitch < w0 * bpp / 8) {
+            int nb = (int)(d.lPitch * 8 / w0);
+            if (nb >= 16 && nb < 24) { bpp = 16; rm = 0xF800; gm = 0x07E0; bm = 0x001F; }
+            else if (nb >= 8 && nb < 16) bpp = 8;
+        }
+    }
+    if (d.dwFlags & DDSD_WIDTH) s->w = (int)d.dwWidth;
+    if (d.dwFlags & DDSD_HEIGHT) s->h = (int)d.dwHeight;
+    s->bpp = bpp; s->rmask = rm; s->gmask = gm; s->bmask = bm;
+    s->pitch = (d.dwFlags & DDSD_PITCH) ? (int)d.lPitch : s->w * bpp / 8;
+    s->bits = (BYTE *)d.lpSurface;
+    s->ext = 1;
+    s->uniq++;
+    { static int n; if (g_cfg.log && n < 4) { n++; mkw_log("SetSurfaceDesc %dx%d %dbpp pitch=%d flags=%lx pf=%lx/%lu %lx (アプリのメモリ)\n", s->w, s->h, s->bpp, s->pitch, (unsigned long)d.dwFlags, (unsigned long)d.ddpfPixelFormat.dwFlags, (unsigned long)d.ddpfPixelFormat.dwRGBBitCount, (unsigned long)d.ddpfPixelFormat.dwRBitMask); } }
+    return DD_OK;
+}
 static HRESULT WINAPI s_SetPrivateData(void *This, REFGUID g, void *d, DWORD n, DWORD fl) { (void)This; (void)g; (void)d; (void)n; (void)fl; return DD_OK; }
 static HRESULT WINAPI s_GetPrivateData(void *This, REFGUID g, void *d, DWORD *n) { (void)This; (void)g; (void)d; (void)n; return DDERR_NOTFOUND; }
 static HRESULT WINAPI s_FreePrivateData(void *This, REFGUID g) { (void)This; (void)g; return DD_OK; }

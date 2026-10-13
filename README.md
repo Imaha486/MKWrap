@@ -40,6 +40,7 @@
 | 忍者じゃじゃ丸くん | Jajamaru.exe | InstallShield 6 | なし |
 | 熱血高校ドッジボール部 | DodgeBall.exe | InstallShield 6 | なし |
 | ぽっぷんぽっぷ | PopnPop.exe | InstallShield 5 (CD 上の非圧縮ファイル) | 62Hz → 58.97Hz、仮想 CD |
+| ガンスターヒーローズ (セガゲーム本舗) | GUNSTAR.exe | なし (CD から直接起動、フォルダをコピー) | 垂直同期 60Hz → 59.92Hz |
 
 各タイトルのボタン割り当てや注意点は [docs/titles.md](docs/titles.md) を参照してください。
 動作確認は Linux 上の Wine で行っています (実機 Windows での報告を歓迎します)。

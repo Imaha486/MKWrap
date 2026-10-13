@@ -882,12 +882,42 @@ static BOOL WINAPI hk_SetMenu(HWND h, HMENU m)
     vwin_t *w = vwin_find(h);
     if (w && w->fullscreen) { w->menu = m; if (!g_cfg.hide_menu_fs) r_SetMenu(h, m); return TRUE; }
     if (w) {
-        BOOL r = r_SetMenu(h, m);
+        /* 本物の Windows と同じく、窓の外寸を保ったままクライアント領域がメニューの分だけ変わる */
+        int ow, oh, had = r_GetMenu(h) != NULL;
+        BOOL r;
+        logical_outer(w, &ow, &oh);
+        r = r_SetMenu(h, m);
+        if (had != (m != NULL)) set_logical_from_outer(w, ow, oh);
         apply_real_size(w, 0, 0, 0, TRUE);
         return r;
     }
     return r_SetMenu(h, m);
 }
+/* ゲームのアクセラレータに Alt+Enter (ゲーム自身の全画面切り替え) があると、
+ * キー入力が WM_COMMAND に変換されて MKWrap の擬似フルスクリーン切り替えに届かないので、先に横取りする */
+static int (WINAPI *r_TranslateAcceleratorA)(HWND, HACCEL, LPMSG);
+static int (WINAPI *r_TranslateAcceleratorW)(HWND, HACCEL, LPMSG);
+static int is_fs_hotkey(const MSG *m)
+{
+    vwin_t *w;
+    if (!m || (m->message != WM_SYSKEYDOWN && m->message != WM_SYSKEYUP && m->message != WM_SYSCHAR)) return 0;
+    if (!(m->lParam & (1 << 29))) return 0;   /* Alt が押されていない */
+    if (m->message == WM_SYSCHAR ? !(m->wParam == '\r' && g_cfg.fs_key_vk == VK_RETURN) : m->wParam != (WPARAM)g_cfg.fs_key_vk) return 0;
+    w = vwin_find(m->hwnd);
+    if (!w) w = vwin_find(GetAncestor(m->hwnd, GA_ROOT));
+    return w != NULL;
+}
+static int WINAPI hk_TranslateAcceleratorA(HWND h, HACCEL a, LPMSG m)
+{
+    if (is_fs_hotkey(m)) return 0;
+    return r_TranslateAcceleratorA(h, a, m);
+}
+static int WINAPI hk_TranslateAcceleratorW(HWND h, HACCEL a, LPMSG m)
+{
+    if (is_fs_hotkey(m)) return 0;
+    return r_TranslateAcceleratorW(h, a, m);
+}
+
 static BOOL WINAPI hk_DrawMenuBar(HWND h)
 {
     vwin_t *w = vwin_find(h);
@@ -985,6 +1015,10 @@ void win_hooks_install(void)
     H("user32.dll", EnumDisplaySettingsA);
     H("user32.dll", GetMenu);
     H("user32.dll", SetMenu);
+    r_TranslateAcceleratorA = GP("user32.dll", "TranslateAcceleratorA");
+    r_TranslateAcceleratorW = GP("user32.dll", "TranslateAcceleratorW");
+    H("user32.dll", TranslateAcceleratorA);
+    H("user32.dll", TranslateAcceleratorW);
     H("user32.dll", DrawMenuBar);
     H("user32.dll", SetWindowLongA);
     H("user32.dll", GetWindowLongA);

@@ -279,10 +279,11 @@ typedef HRESULT (WINAPI *EnumDevices_t)(void *, DWORD, void *, void *, DWORD);
 typedef HRESULT (WINAPI *GetDeviceState_t)(void *, DWORD, void *);
 typedef HRESULT (WINAPI *GetDeviceData_t)(void *, DWORD, void *, DWORD *, DWORD);
 typedef HRESULT (WINAPI *QI_t)(void *, REFIID, void **);
+typedef HRESULT (WINAPI *SetCoop_t)(void *, HWND, DWORD);
 
 #define MAXVT 4
 static struct { void **vt; CreateDevice_t cd; EnumDevices_t ed; QI_t qi; } g_divt[MAXVT];
-static struct { void **vt; GetDeviceState_t gs; GetDeviceData_t gd; QI_t qi; } g_devvt[MAXVT];
+static struct { void **vt; GetDeviceState_t gs; GetDeviceData_t gd; QI_t qi; SetCoop_t sc; } g_devvt[MAXVT];
 #define MAXKB 8
 static struct { void *dev; BYTE sent[256]; DWORD seq; } g_kb[MAXKB];
 
@@ -303,6 +304,9 @@ static HRESULT WINAPI hk_dev_GetDeviceState(void *This, DWORD cb, void *data)
             return hr;
         }
         for (i = 1; i < 256; i++) if (g_dik_down[i]) ((BYTE *)data)[i] |= 0x80;
+        /* Alt+Enter (擬似フルスクリーン切り替え) の Enter はゲームに渡さない */
+        if (g_cfg.fs_key_vk == VK_RETURN && ((((BYTE *)data)[DIK_LMENU] | ((BYTE *)data)[DIK_RMENU]) & 0x80))
+            ((BYTE *)data)[DIK_RETURN] = 0;
     }
     return hr;
 }
@@ -336,6 +340,20 @@ static HRESULT WINAPI hk_dev_GetDeviceData(void *This, DWORD cbo, void *rg, DWOR
     return hr;
 }
 
+/* キーボードの排他モードは非排他にする。
+ * 排他モードでは DirectInput がキー入力を横取りし、窓にキーのメッセージが届かないため、
+ * Alt+Enter (擬似フルスクリーン) や一時停止キーが効かなくなる */
+static HRESULT WINAPI hk_dev_SetCooperativeLevel(void *This, HWND h, DWORD fl)
+{
+    int v = find_dev_vt(This);
+    if (kb_index(This) >= 0) mkw_log("DirectInput: キーボード SetCooperativeLevel hwnd=%p flags=%lx\n", (void *)h, (unsigned long)fl);
+    if (kb_index(This) >= 0 && (fl & DISCL_EXCLUSIVE) && !GetPrivateProfileIntW(L"Input", L"KeyboardExclusive", 0, g_ini)) {
+        mkw_log("DirectInput: キーボードの排他モードを非排他に変更 (flags=%lx)\n", (unsigned long)fl);
+        fl = (fl & ~DISCL_EXCLUSIVE) | DISCL_NONEXCLUSIVE;
+    }
+    return g_devvt[v].sc(This, h, fl);
+}
+
 static void patch_device(void *dev);
 static HRESULT WINAPI hk_dev_QueryInterface(void *This, REFIID iid, void **out)
 {
@@ -361,11 +379,13 @@ static void patch_device(void *dev)
     g_devvt[i].qi = (QI_t)vt[0];
     g_devvt[i].gs = (GetDeviceState_t)vt[9];
     g_devvt[i].gd = (GetDeviceData_t)vt[10];
-    VirtualProtect(vt, 11 * sizeof(void *), PAGE_EXECUTE_READWRITE, &old);
+    g_devvt[i].sc = (SetCoop_t)vt[13];
+    VirtualProtect(vt, 14 * sizeof(void *), PAGE_EXECUTE_READWRITE, &old);
     vt[0] = (void *)hk_dev_QueryInterface;
     vt[9] = (void *)hk_dev_GetDeviceState;
     vt[10] = (void *)hk_dev_GetDeviceData;
-    VirtualProtect(vt, 11 * sizeof(void *), old, &old);
+    vt[13] = (void *)hk_dev_SetCooperativeLevel;
+    VirtualProtect(vt, 14 * sizeof(void *), old, &old);
 }
 
 static HRESULT WINAPI hk_di_CreateDevice(void *This, REFGUID g, void **out, void *outer)
