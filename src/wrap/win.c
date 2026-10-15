@@ -3,6 +3,7 @@
  * GDI の描画先 DC は論理サイズのキャンバス (メモリ DC) に差し替え、転送時に拡大表示する。 */
 #include "mkw.h"
 #include <string.h>
+#include <stdlib.h>
 
 #define MAXWIN 8
 #define MKW_TIMER 0x4D4B
@@ -274,7 +275,55 @@ void vwin_present(vwin_t *w, int frame)
     vwin_present_now(w);
 }
 
+/* 案内の文字をキャンバスに重ねる (表示の間だけ。戻すための元の画素を返す) */
+static DWORD *overlay_draw(vwin_t *w, RECT *box)
+{
+    const wchar_t *t = input_overlay_text();
+    DWORD *save; int y, fh; HFONT f, of; SIZE sz; RECT r;
+    if (!t || !w->cbits || w->cw < 32 || w->ch < 16) return NULL;
+    fh = w->ch / 16; if (fh < 10) fh = 10; if (fh > 24) fh = 24;
+    f = CreateFontW(-fh, 0, 0, 0, FW_BOLD, 0, 0, 0, SHIFTJIS_CHARSET, 0, 0, NONANTIALIASED_QUALITY, 0, L"MS Gothic");
+    of = (HFONT)SelectObject(w->cdc, f);
+    GetTextExtentPoint32W(w->cdc, t, (int)wcslen(t), &sz);
+    r.left = 0; r.right = w->cw; r.top = 0; r.bottom = sz.cy + 4;
+    if (sz.cx + 8 > w->cw) {   /* 収まらなければ折り返す */
+        RECT m = { 4, 2, w->cw - 4, 2 };
+        DrawTextW(w->cdc, t, -1, &m, DT_CALCRECT | DT_WORDBREAK);
+        r.bottom = m.bottom + 4; if (r.bottom > w->ch) r.bottom = w->ch;
+    }
+    *box = r;
+    save = (DWORD *)malloc((size_t)w->cw * r.bottom * 4);
+    if (!save) { SelectObject(w->cdc, of); DeleteObject(f); return NULL; }
+    GdiFlush();
+    for (y = 0; y < r.bottom; y++) memcpy(save + (size_t)y * w->cw, (DWORD *)w->cbits + (size_t)y * w->cw, (size_t)w->cw * 4);
+    FillRect(w->cdc, &r, (HBRUSH)GetStockObject(BLACK_BRUSH));
+    SetBkMode(w->cdc, TRANSPARENT); SetTextColor(w->cdc, RGB(255, 255, 80));
+    { RECT m = { 4, 2, w->cw - 4, r.bottom }; DrawTextW(w->cdc, t, -1, &m, DT_WORDBREAK | DT_NOPREFIX); }
+    GdiFlush();
+    SelectObject(w->cdc, of); DeleteObject(f);
+    return save;
+}
+static void overlay_restore(vwin_t *w, DWORD *save, const RECT *box)
+{
+    int y;
+    if (!save) return;
+    GdiFlush();
+    for (y = 0; y < box->bottom; y++) memcpy((DWORD *)w->cbits + (size_t)y * w->cw, save + (size_t)y * w->cw, (size_t)w->cw * 4);
+    free(save);
+}
+
+static void vwin_present_now2(vwin_t *w);
 static void vwin_present_now(vwin_t *w)
+{
+    RECT box; DWORD *save;
+    if (!w || !w->cdc) return;
+    EnterCriticalSection(&g_cs);
+    save = overlay_draw(w, &box);
+    vwin_present_now2(w);
+    overlay_restore(w, save, &box);
+    LeaveCriticalSection(&g_cs);
+}
+static void vwin_present_now2(vwin_t *w)
 {
     HDC dc; RECT cl, d; HBRUSH bk;
     if (!w || !w->cdc) return;

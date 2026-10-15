@@ -114,6 +114,13 @@ static const mk_profile_t g_profiles[] = {
       L"; CD の中身の場所 (空欄 = このフォルダ)。ドライブ文字は空欄なら空いている文字を自動で使います\r\n"
       L"Path=\r\nLetter=\r\nLabel=POPNPOP\r\n",
       L"; 元は全画面専用のため、枠付きの窓で表示します (Alt+Enter で全画面)\r\nModeChangeFullscreen=0\r\n" },
+    { L"bublbobl.exe", L"バブルボブル",
+      L"; 元は 16ms 間隔 (62.5Hz) で動くため、時計を遅らせてアーケード (タイトー) の 59.185Hz に合わせます\r\n"
+      L"GameHz=62.5\r\nTargetHz=59.185\r\n",
+      L"; ゲームの初期設定 (1P): 左=X 右=C ジャンプ=Z あわ=A クレジット=F2 スタート=F3 (2P スタート=HOME)\r\n"
+      DIR_KEYS(L"", L"", L"X", L"C")
+      L"A=Z\r\nB=A\r\nX=A\r\nY=Z\r\nBack=F2\r\nStart=F3\r\nRB=HOME\r\n",
+      L"", L"", NULL, NULL },
     /* ---- 第3弾: セガゲーム本舗 ---- */
     { L"gunstar.exe", L"ガンスターヒーローズ (セガゲーム本舗)", SEGA_TIMING, SEGA_INPUT, L"", L"", SEGA_NOTE, NULL, SEGA_DISPLAY },
 };
@@ -125,9 +132,12 @@ static const mk_profile_t g_sega_profile = {
 static const mk_profile_t g_generic_profile = {
     L"", L"(未登録のタイトル)",
     L"; 速度がおかしい場合は GameHz / TargetHz を設定してください\r\n",
+    L"; 未登録のタイトルです。ゲーム中に Ctrl+F12 (またはパッドの LB+RB+Back 長押し) で割り当てを覚えさせてください\r\n"
+    L"LearnHint=1\r\n"
     STD_DIR L"A=Z\r\nB=X\r\nX=C\r\nY=V\r\n" STD_SYS,
     L"", L"",
-    L"; このタイトル用の設定は未登録です。ボタン割り当てはゲームの「操作の設定」に合わせて変更してください。\r\n",
+    L"; このタイトル用の設定は未登録です。ゲーム中に Ctrl+F12 (またはパッドの LB+RB+Back を 1.5 秒押す) で\r\n"
+    L"; パッドのボタン → キーの順に押すと割り当てを覚えて、この INI に書き込みます。\r\n",
     L"\r\n[CD]\r\n"
     L"; 1 = 仮想 CD ドライブを作り、このフォルダを CD-ROM として見せる (CD を要求されるとき)\r\n"
     L"Emulate=0\r\nPath=\r\nLetter=\r\nLabel=\r\n"

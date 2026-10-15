@@ -431,7 +431,9 @@ static int write_ini(const wchar_t *path, const mk_profile_t *p, const wchar_t *
         L"BackgroundInput=0\r\n"
         L"; 一時停止: キーボードのキーと、パッドのボタン (例 Back+Start, Guide)\r\n"
         L"PauseKey=PAUSE\r\n"
-        L"PauseButton=\r\n");
+        L"PauseButton=\r\n"
+        L"; 割り当ての学習: ゲーム中に Ctrl+F12 (またはパッドの LB+RB+Back を 1.5 秒押す) → パッドのボタン → キー の順に押す。\r\n"
+        L"; 結果はこの INI に書き込まれます。もう一度 Ctrl+F12 で終了\r\n");
     write_utf16(h, p->input);
     write_utf16(h,
         L"\r\n[Registry]\r\n"

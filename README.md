@@ -1,7 +1,5 @@
 # MKWrap
 
-<img src="https://i486.mods.jp/ichild/wp-content/uploads/2026/10/kikikaikai.jpg">
-
 メディアカイト (Media Kite) から発売された、アーケード／ファミコン移植 PC ソフト (1999～2003 年頃) を
 **Windows 10 / 11 で快適に遊ぶため**のツール一式です。
 
@@ -42,7 +40,11 @@
 | 忍者じゃじゃ丸くん | Jajamaru.exe | InstallShield 6 | なし |
 | 熱血高校ドッジボール部 | DodgeBall.exe | InstallShield 6 | なし |
 | ぽっぷんぽっぷ | PopnPop.exe | InstallShield 5 (CD 上の非圧縮ファイル) | 62Hz → 58.97Hz、仮想 CD |
+| バブルボブル | bublbobl.exe | InstallShield 3 | 62.5Hz → 59.185Hz |
 | ガンスターヒーローズ (セガゲーム本舗) | GUNSTAR.exe | なし (CD から直接起動、フォルダをコピー) | 垂直同期 60Hz → 59.92Hz |
+
+未登録のタイトルや、割り当てがゲームと合わない場合は、ゲーム中に **Ctrl+F12** (またはパッドの LB+RB+Back を 1.5 秒押す) で
+「パッドのボタン → キーボードのキー」の順に押すだけで割り当てを覚えさせられます (mkwrap.ini に保存)。
 
 各タイトルのボタン割り当てや注意点は [docs/titles.md](docs/titles.md) を参照してください。
 動作確認は Linux 上の Wine で行っています (実機 Windows での報告を歓迎します)。

@@ -54,8 +54,18 @@
 | PostKeyMessages | 2 | キー入力メッセージも送る。0 = 送らない、1 = すべて、2 = F1～F12 のみ |
 | BackgroundInput | 0 | 1 = 窓が非アクティブでも入力を渡す |
 | PauseKey | PAUSE | 一時停止のキー |
+| LearnHint | 0 | 1 = 起動時に「Ctrl+F12 で割り当て」の案内を数秒表示 (未登録のタイトルで MKSetup が設定) |
 | PauseButton | (空) | 一時停止のパッドボタン (例 `Back+Start`、`Guide`) |
 | ボタン名 | | `A=X` のように、パッドのボタンにキーを割り当てる。`X+Z` で同時押し |
+
+### 割り当ての学習
+ゲーム中に Ctrl+F12 (またはパッドの LB+RB+Back を 1.5 秒押し続ける) と学習モードになります (ゲームは一時停止し、画面上部に案内が出ます)。
+1. パッドのボタン (またはスティックの方向) を押す
+2. そのボタンに割り当てるキーボードのキーを押す (同じパッドのボタンをもう一度押すと割り当てを解除)
+3. 1～2 を繰り返し、Ctrl+F12 (または LB+RB+Back 長押し) で終了
+
+割り当ては即座に有効になり、mkwrap.ini の `[Input]` に書き込まれます。十字キーと左スティックは同じ方向をまとめて設定します。
+同時押し (`X+Z`) は学習できないので INI を直接書いてください。
 
 ボタン名: `A B X Y LB RB LT RT Back Start LThumb RThumb Guide DPadUp DPadDown DPadLeft DPadRight
 LStickUp LStickDown LStickLeft LStickRight RStickUp RStickDown RStickLeft RStickRight`
@@ -101,6 +111,7 @@ CTRL LCTRL RCTRL ALT LALT RALT INSERT DELETE HOME END PGUP PGDN PAUSE NUM0`～`N
 |---|---|
 | Log | 1 = `mkwrap.log` に記録。2 = さらに詳しく (GetProcAddress で解決した関数、メニュー構成、ファイルアクセスなど) |
 | TestInput | 自動テスト用の入力。`F2@4-4.3,F3@6-6.3,LEFT@8-10` (キー@開始秒-終了秒) |
+| TestButtons | 自動テスト用のパッド入力。`LB@10-12,DPadLeft@15-15.3` (ボタン名@開始秒-終了秒) |
 | MeasureIRQ | 1 = CPU エミュレータ DLL (Z80EMU / DLL6809) の割り込み要求回数を記録 (速度の調査用) |
 | HangReport | 既定 1。ゲームの窓が数秒応答しなくなったら、全スレッドの実行位置と呼び出し履歴を `mkwrap_hang.log` に、ミニダンプを `mkwrap_hang.dmp` に書き出す (Log の設定と無関係) |
 | CrashReport | 既定 1。例外で異常終了するとき、例外の種類と場所・全スレッドの呼び出し履歴を `mkwrap_crash.log` に、ミニダンプを `mkwrap_crash.dmp` に書き出す |

@@ -115,6 +115,122 @@ static int window_active(void)
     return pid == GetCurrentProcessId();
 }
 
+/* ---- 割り当ての学習 (未知のゲーム用) ----
+ * Ctrl+F12、またはパッドの LB+RB+Back を 1.5 秒押し続けると学習モード。
+ * パッドのボタンを押す → そのボタンに割り当てるキーボードのキーを押す、を繰り返す (ゲームは一時停止)。
+ * 結果はすぐ mkwrap.ini の [Input] に書き込まれる。もう一度 Ctrl+F12 / LB+RB+Back 長押しで終了。 */
+static volatile int g_learn;          /* 0=なし 1=ボタン待ち 2=キー待ち */
+static int g_learn_btn, g_learn_saved_pause;
+static double g_learn_t, g_hint_until;
+static wchar_t g_learn_msg[160];
+static BYTE g_key_prev[256];
+
+static const wchar_t *btn_label(int b)
+{
+    static const wchar_t *n[B_COUNT] = { L"十字キー↑", L"十字キー↓", L"十字キー←", L"十字キー→", L"Start", L"Back", L"左スティック押し込み", L"右スティック押し込み",
+        L"LB", L"RB", L"Guide", L"", L"A", L"B", L"X", L"Y", L"LT", L"RT", L"左スティック↑", L"左スティック↓", L"左スティック←", L"左スティック→",
+        L"右スティック↑", L"右スティック↓", L"右スティック←", L"右スティック→" };
+    return (b >= 0 && b < B_COUNT) ? n[b] : L"";
+}
+static void vk_to_name(int vk, char *out, int n)
+{
+    int i;
+    if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) { out[0] = (char)vk; out[1] = 0; return; }
+    if (vk >= VK_F1 && vk <= VK_F24) { _snprintf(out, n, "F%d", vk - VK_F1 + 1); return; }
+    if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) { _snprintf(out, n, "NUM%d", vk - VK_NUMPAD0); return; }
+    for (i = 0; g_keys[i].n; i++) if (g_keys[i].vk == vk) { _snprintf(out, n, "%s", g_keys[i].n); return; }
+    _snprintf(out, n, "0x%02X", vk);
+}
+static SHORT (WINAPI *r_GetAsyncKeyState)(int);
+static int real_key(int vk) { return r_GetAsyncKeyState ? (r_GetAsyncKeyState(vk) & 0x8000) != 0 : (GetAsyncKeyState(vk) & 0x8000) != 0; }
+
+const wchar_t *input_overlay_text(void)
+{
+    if (g_learn) return g_learn_msg;
+    if (g_hint_until > 0 && mkw_now() < g_hint_until) return L"パッドの割り当て: Ctrl+F12 または LB+RB+Back 長押し";
+    return NULL;
+}
+
+static DWORD g_poll_tid;
+static void learn_set_msg(void)
+{
+    if (g_learn == 1) _snwprintf(g_learn_msg, 160, L"[割り当て] パッドのボタンを押す (終了: Ctrl+F12)");
+    else _snwprintf(g_learn_msg, 160, L"[割り当て] %ls に割り当てるキーを押す (同じボタン=解除)", btn_label(g_learn_btn));
+}
+static void learn_toggle(void)
+{
+    if (!g_learn) {
+        g_learn = 1; g_learn_saved_pause = g_paused; g_paused = 1; g_hint_until = 0;
+        { int i; for (i = 0; i < 256; i++) g_key_prev[i] = (BYTE)real_key(i); }
+        learn_set_msg();
+        mkw_log("割り当ての学習を開始\n");
+    } else {
+        g_learn = 0; g_paused = g_learn_saved_pause;
+        mkw_log("割り当ての学習を終了\n");
+    }
+    { vwin_t *w = vwin_main(); if (w) { w->dirty = 1; vwin_present(w, 0); } }
+}
+static void learn_assign(int b, int vk)
+{
+    char name[16] = "", line[64]; wchar_t wb[32], wv[64];
+    int pair = -1;
+    if (vk) vk_to_name(vk, name, sizeof name);
+    /* 十字キーと左スティックは同じ方向に同じキーを割り当てる */
+    if (b >= B_DUP && b <= B_DRIGHT) pair = B_LSU + (b - B_DUP);
+    else if (b >= B_LSU && b <= B_LSR) pair = B_DUP + (b - B_LSU);
+    EnterCriticalSection(&g_cs);
+    memset(g_map_vk[b], 0, sizeof g_map_vk[b]);
+    if (vk) g_map_vk[b][0] = vk;
+    if (pair >= 0) { memset(g_map_vk[pair], 0, sizeof g_map_vk[pair]); if (vk) g_map_vk[pair][0] = vk; }
+    LeaveCriticalSection(&g_cs);
+    _snprintf(line, sizeof line, "%s", name);
+    MultiByteToWideChar(CP_UTF8, 0, line, -1, wv, 64);
+    MultiByteToWideChar(CP_UTF8, 0, g_button_names[b], -1, wb, 32);
+    WritePrivateProfileStringW(L"Input", wb, wv, g_ini);
+    if (pair >= 0) { MultiByteToWideChar(CP_UTF8, 0, g_button_names[pair], -1, wb, 32); WritePrivateProfileStringW(L"Input", wb, wv, g_ini); }
+    strncpy(g_cfg.map[b], name, sizeof g_cfg.map[b] - 1);
+    mkw_log("割り当て: %s = %s\n", g_button_names[b], vk ? name : "(なし)");
+}
+/* 学習中は呼び出し元でパッド入力をゲームに渡さない */
+static void learn_poll(const int *btn, int active)
+{
+    static int prev[B_COUNT]; static double combo_t; static int ctrl_f12_prev;
+    int i, combo = btn[B_LB] && btn[B_RB] && btn[B_BACK];
+    int cf = active && real_key(VK_CONTROL) && real_key(VK_F12);
+    double now = mkw_now();
+    /* 開始・終了 */
+    if (cf && !ctrl_f12_prev) learn_toggle();
+    ctrl_f12_prev = cf;
+    if (combo) { if (combo_t == 0) combo_t = now; else if (combo_t > 0 && now - combo_t > 1.5) { combo_t = -1; learn_toggle(); } }
+    else combo_t = 0;
+    if (g_learn && !combo && active) {
+        if (g_learn == 1) {
+            for (i = 0; i < B_COUNT; i++) if (btn[i] && !prev[i] && i != B_RES && i != B_GUIDE) {
+                g_learn_btn = i; g_learn = 2; g_learn_t = now;
+                for (int k = 0; k < 256; k++) g_key_prev[k] = (BYTE)real_key(k);
+                learn_set_msg(); break;
+            }
+        } else if (g_learn == 2) {
+            if (btn[g_learn_btn] && !prev[g_learn_btn] && now - g_learn_t > 0.2) {
+                learn_assign(g_learn_btn, 0); g_learn = 1; learn_set_msg();
+            } else {
+                for (i = 8; i < 256; i++) {
+                    int d;
+                    if (i == VK_SHIFT || i == VK_CONTROL || i == VK_MENU || i == VK_F12) continue;
+                    d = real_key(i);
+                    if (d && !g_key_prev[i]) {
+                        learn_assign(g_learn_btn, i); g_learn = 1; learn_set_msg(); break;
+                    }
+                    g_key_prev[i] = (BYTE)d;
+                }
+                if (g_learn == 2 && now - g_learn_t > 15) { g_learn = 1; learn_set_msg(); }
+            }
+        }
+        { vwin_t *w = vwin_main(); if (w) w->dirty = 1; }
+    }
+    memcpy(prev, btn, sizeof prev);
+}
+
 void input_poll(void)
 {
     XSTATE st; int btn[B_COUNT]; BYTE vk[256], dik[256]; int i, k, pause_now;
@@ -166,6 +282,22 @@ void input_poll(void)
             }
         }
     }
+    {   /* 調査用: [Debug] TestButtons=A@10-10.2,... (パッドのボタンを押したことにする) */
+        static char tb[512]; static int loaded;
+        if (!loaded) { wchar_t w[512]; loaded = 1; GetPrivateProfileStringW(L"Debug", L"TestButtons", L"", w, 512, g_ini); WideCharToMultiByte(CP_UTF8, 0, w, -1, tb, 512, NULL, NULL); }
+        if (tb[0]) {
+            char buf[512], *t, *ctx = NULL; strcpy(buf, tb);
+            for (t = strtok_r(buf, ",", &ctx); t; t = strtok_r(NULL, ",", &ctx)) {
+                char *at = strchr(t, '@'); double a, b2; int bi;
+                if (!at) continue;
+                *at = 0; a = atof(at + 1); { char *d = strchr(at + 1, '-'); b2 = d ? atof(d + 1) : a + 0.2; }
+                bi = button_index(t);
+                if (bi >= 0 && now >= a && now < b2) btn[bi] = 1;
+            }
+        }
+    }
+    if (GetCurrentThreadId() == g_poll_tid) learn_poll(btn, window_active());
+    if (g_learn || (btn[B_LB] && btn[B_RB] && btn[B_BACK])) memset(btn, 0, sizeof btn);
     /* 一時停止ボタン (同時押し可) */
     pause_now = g_npause > 0;
     for (i = 0; i < g_npause; i++) if (!btn[g_pause_buttons[i]]) pause_now = 0;
@@ -222,6 +354,7 @@ int input_dik_down(int dik) { return dik > 0 && dik < 256 && g_dik_down[dik]; }
 static DWORD WINAPI poll_thread(LPVOID p)
 {
     (void)p;
+    g_poll_tid = GetCurrentThreadId();
     for (;;) {
         Sleep(4);
         input_poll();
@@ -245,11 +378,11 @@ void input_init(void)
             if (b >= 0) g_pause_buttons[g_npause++] = b;
         }
     }
+    if (GetPrivateProfileIntW(L"Input", L"LearnHint", 0, g_ini)) g_hint_until = mkw_now() + 8;
     if (g_cfg.input_enable || 1) CreateThread(NULL, 0, poll_thread, NULL, 0, NULL);
 }
 
 /* ---- Win32 キー状態 API ---- */
-static SHORT (WINAPI *r_GetAsyncKeyState)(int);
 static SHORT (WINAPI *r_GetKeyState)(int);
 static BOOL (WINAPI *r_GetKeyboardState)(PBYTE);
 

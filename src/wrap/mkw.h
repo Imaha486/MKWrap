@@ -6,7 +6,7 @@
 #include <windows.h>
 #include <stdio.h>
 
-#define MKW_VERSION "1.3.1"
+#define MKW_VERSION "1.4"
 
 /* ---------------- 設定 ---------------- */
 typedef struct {
@@ -126,6 +126,7 @@ void input_init(void);
 void input_hooks_install(void);
 int  input_vk_down(int vk);     /* パッドで押されている仮想キー */
 int  input_dik_down(int dik);   /* パッドで押されている DIK */
+const wchar_t *input_overlay_text(void); /* 画面に重ねて出す案内 (割り当ての学習中など) */
 void input_poll(void);
 HRESULT WINAPI mk_DirectInputCreateA(HINSTANCE, DWORD, void **, void *);
 HRESULT WINAPI mk_DirectInputCreateW(HINSTANCE, DWORD, void **, void *);
