@@ -6,7 +6,7 @@
 #include <windows.h>
 #include <stdio.h>
 
-#define MKW_VERSION "1.4"
+#define MKW_VERSION "1.4.2"
 
 /* ---------------- 設定 ---------------- */
 typedef struct {
@@ -65,6 +65,7 @@ void mkw_log(const char *fmt, ...);
 void *iat_hook(HMODULE mod, const char *dll, const char *func, void *newfn);
 void *iat_hook_ord(HMODULE mod, const char *dll, WORD ord, void *newfn);
 void dsound_hooks_install(void);
+void gdi_sync(void);   /* GDI のバッチを止めて溜まった描画を実行 */
 void dsound_pause(int pause);
 void patch_vtbl(void *obj, int idx, void *fn, void **orig);
 void hooks_install(void);
@@ -110,6 +111,8 @@ void    vwin_set_fullscreen(vwin_t *w, int fs);
 int     vwin_is_canvas_dc(HDC dc);
 vwin_t *vwin_from_canvas_dc(HDC dc);
 void    win_hooks_install(void);
+void    vwin_lock(void);
+void    vwin_unlock(void);
 int     d3d9_present(vwin_t *w, const RECT *cl, const RECT *d);
 void    d3d9_release_window(HWND h);
 extern int g_fake_mode_w, g_fake_mode_h, g_fake_mode_bpp; /* ゲームが設定したつもりの画面モード */

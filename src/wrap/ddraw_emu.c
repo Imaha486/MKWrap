@@ -70,6 +70,18 @@ struct Surf {
 static void **vt_dd[4], **vt_s[5], **vt_pal, **vt_clip;
 static DDraw *g_dd;
 
+/* GDI の一括処理 (バッチ) を止める。
+ * Windows は GDI の描画をスレッドごとに溜めてから実行するため、ゲームが GetDC で得たサーフェスの DC に
+ * GDI で描いた直後に Blt / Lock すると、まだ描かれていない (途中の) 画素を読むことがある。
+ * Wine は溜めずにすぐ実行するので起きない。サーフェスを扱うスレッドはバッチを 1 (溜めない) にする */
+void gdi_sync(void)
+{
+    static DWORD tls = TLS_OUT_OF_INDEXES;
+    if (tls == TLS_OUT_OF_INDEXES) tls = TlsAlloc();
+    if (tls != TLS_OUT_OF_INDEXES && !TlsGetValue(tls)) { GdiSetBatchLimit(1); TlsSetValue(tls, (void *)1); }
+    GdiFlush();
+}
+
 /* ---------------- 共通ヘルパ ---------------- */
 static int ver_index_dd(int v) { return v == 1 ? 0 : v == 2 ? 1 : v == 4 ? 2 : 3; }
 static int ver_index_s(int v) { return v == 1 ? 0 : v == 2 ? 1 : v == 3 ? 2 : v == 4 ? 3 : 4; }
@@ -285,6 +297,7 @@ static HRESULT do_blt(Surf *dst, RECT *dr_in, Surf *src, RECT *sr_in, int keyed,
     sw = sr.right - sr.left; sh = sr.bottom - sr.top;
     if (dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0) return DD_OK;
     same = (dt.f.bpp == st.f.bpp && dt.f.rm == st.f.rm && dt.f.gm == st.f.gm && dt.f.bm == st.f.bm && (dt.f.bpp != 8 || 1));
+    if (dst->virt) vwin_lock();   /* キャンバスへの書き込み中は表示しない */
     {
         int y0 = dr.top < 0 ? -dr.top : 0, y1 = dr.bottom > dt.h ? dh - (dr.bottom - dt.h) : dh;
         int x0 = dr.left < 0 ? -dr.left : 0, x1 = dr.right > dt.w ? dw - (dr.right - dt.w) : dw;
@@ -348,6 +361,7 @@ static HRESULT do_blt(Surf *dst, RECT *dr_in, Surf *src, RECT *sr_in, int keyed,
             free(xmap);
         }
     }
+    if (dst->virt) vwin_unlock();
     if (dst->primary) {
         long long area = (long long)dw * dh;
         surf_present(dst, area * 2 >= (long long)dt.w * dt.h);
@@ -367,11 +381,13 @@ static HRESULT do_fill(Surf *dst, RECT *dr_in, DWORD color)
     if (dr.right > dt.w) dr.right = dt.w;
     if (dr.bottom > dt.h) dr.bottom = dt.h;
     if (dst->virt) { fmt_t pf; DWORD r, g, b; int bpp = display_bpp(dst->dd); default_masks(bpp, &r, &g, &b); make_fmt(&pf, bpp == 15 ? 16 : bpp, r, g, b, surf_pal(dst)); color = raw_to_rgb(&pf, color); }
+    if (dst->virt) vwin_lock();
     for (y = dr.top; y < dr.bottom; y++) {
         BYTE *row = dt.bits + (size_t)y * dt.pitch;
         if (dt.f.bpp == 8) memset(row + dr.left, (int)color, dr.right - dr.left);
         else for (x = dr.left; x < dr.right; x++) put_px(row, x, dt.f.bpp, color);
     }
+    if (dst->virt) vwin_unlock();
     if (dst->primary) {
         long long area = (long long)(dr.right - dr.left) * (dr.bottom - dr.top);
         surf_present(dst, area * 2 >= (long long)dt.w * dt.h);
@@ -558,8 +574,17 @@ static HRESULT WINAPI s_AddOverlayDirtyRect(void *This, RECT *r) { (void)This; (
 
 static HRESULT WINAPI s_Blt(void *This, RECT *dr, void *srcif, RECT *sr, DWORD fl, DDBLTFX *fx)
 {
+    gdi_sync();
     { static int n; if (g_cfg.log && n < 20) { n++; mkw_log("Blt dst=%p(primary=%d) src=%p fl=%lx dr=%ld,%ld-%ld,%ld\n", This, SELF(Surf, This)->primary, srcif, (unsigned long)fl, dr ? dr->left : -1, dr ? dr->top : -1, dr ? dr->right : -1, dr ? dr->bottom : -1); } }
     Surf *d = SELF(Surf, This), *s = srcif ? SELF(Surf, srcif) : NULL;
+    if (g_cfg.log >= 2) {   /* 調査用: 使われた Blt の種類を一度ずつ記録 */
+        static DWORD seen[32][3]; static int ns; int i; DWORD fxf = (fl & DDBLT_DDFX) && fx ? fx->dwDDFX : 0;
+        DWORD key = (s ? (DWORD)s->bpp : 0) << 8 | (DWORD)d->bpp;
+        for (i = 0; i < ns; i++) if (seen[i][0] == fl && seen[i][1] == fxf && seen[i][2] == key) break;
+        if (i == ns && ns < 32) { seen[ns][0] = fl; seen[ns][1] = fxf; seen[ns][2] = key; ns++;
+            mkw_log("Blt の種類: fl=%08lx ddfx=%08lx %dbpp->%dbpp%s%s\n", (unsigned long)fl, (unsigned long)fxf, s ? s->bpp : 0, d->bpp,
+                    d->primary ? " (primary)" : "", (sr && dr && ((sr->right - sr->left) != (dr->right - dr->left) || (sr->bottom - sr->top) != (dr->bottom - dr->top))) ? " 拡大縮小" : ""); }
+    }
     if (fl & DDBLT_COLORFILL) return do_fill(d, dr, fx ? fx->dwFillColor : 0);
     if (fl & DDBLT_DEPTHFILL) return DD_OK;
     if (!s) {
@@ -579,6 +604,7 @@ static HRESULT WINAPI s_Blt(void *This, RECT *dr, void *srcif, RECT *sr, DWORD f
 static HRESULT WINAPI s_BltBatch(void *This, void *b, DWORD n, DWORD fl) { (void)This; (void)b; (void)n; (void)fl; return DDERR_UNSUPPORTED; }
 static HRESULT WINAPI s_BltFast(void *This, DWORD x, DWORD y, void *srcif, RECT *sr, DWORD trans)
 {
+    gdi_sync();
     Surf *d = SELF(Surf, This), *s = srcif ? SELF(Surf, srcif) : NULL;
     RECT dr, r;
     int keyed = 0; DWORD lo = 0, hi = 0;
@@ -623,6 +649,7 @@ static void swap_buffers(Surf *a, Surf *b)
 }
 static HRESULT WINAPI s_Flip(void *This, void *target, DWORD fl)
 {
+    gdi_sync();
     { static int n; if (g_cfg.log && n < 5) { n++; mkw_log("Flip\n"); } }
     Surf *s = SELF(Surf, This);
     (void)fl;
@@ -678,6 +705,7 @@ static HRESULT WINAPI s_GetColorKey(void *This, DWORD fl, DDCOLORKEY *ck)
 }
 static HRESULT WINAPI s_GetDC(void *This, HDC *out)
 {
+    gdi_sync();
     { static int n; if (g_cfg.log && n < 10) { n++; mkw_log("GetDC %p primary=%d\n", This, SELF(Surf, This)->primary); } }
     Surf *s = SELF(Surf, This);
     if (s->virt) {
@@ -792,6 +820,7 @@ static HRESULT WINAPI s_Initialize(void *This, void *dd, void *desc) { (void)Thi
 static HRESULT WINAPI s_IsLost(void *This) { (void)This; return DD_OK; }
 static HRESULT WINAPI s_Lock(void *This, RECT *r, void *desc, DWORD fl, HANDLE ev)
 {
+    gdi_sync();
     { static int n; if (g_cfg.log && n < 10) { n++; mkw_log("Lock %p primary=%d\n", This, SELF(Surf, This)->primary); } }
     Surf *s = SELF(Surf, This);
     int v = ((IFACE *)This)->ver;
@@ -1033,7 +1062,7 @@ static HRESULT create_surface(DDraw *dd, DDSURFACEDESC2 *d, Surf **out)
         if (!surf_alloc(s, w, h, bpp, r, g, b)) { free(s); return DDERR_OUTOFMEMORY; }
         s->caps = (caps ? caps : DDSCAPS_OFFSCREENPLAIN);
         if (!(s->caps & (DDSCAPS_SYSTEMMEMORY | DDSCAPS_VIDEOMEMORY))) s->caps |= DDSCAPS_VIDEOMEMORY | DDSCAPS_LOCALVIDMEM;
-        mkw_log("CreateSurface %dx%d %dbpp caps=%lx\n", w, h, bpp, (unsigned long)s->caps);
+        mkw_log("CreateSurface %dx%d %dbpp caps=%lx masks=%lx/%lx/%lx%s\n", w, h, bpp, (unsigned long)s->caps, (unsigned long)r, (unsigned long)g, (unsigned long)b, (d->dwFlags & DDSD_PIXELFORMAT) ? " (形式指定あり)" : "");
     }
     if (d->dwFlags & DDSD_CKSRCBLT) { s->ck_src = d->ddckCKSrcBlt; s->ckflags |= DDCKEY_SRCBLT; }
     if (d->dwFlags & DDSD_CKDESTBLT) { s->ck_dst = d->ddckCKDestBlt; s->ckflags |= DDCKEY_DESTBLT; }

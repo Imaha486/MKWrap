@@ -251,6 +251,13 @@ static LRESULT WINAPI hk_DefWindowProcA(HWND h, UINT m, WPARAM wp, LPARAM lp)
     return r_DefWindowProcA(h, m, wp, lp);
 }
 
+/* 確保したメモリを 0 で埋める (Windows 9x では新しく確保したメモリがほぼ 0 だったため、
+ * 初期化しないまま使うゲームが今の Windows では前の内容 (ゴミ) を拾って表示が化けることがある) */
+static LPVOID (WINAPI *r_HeapAlloc)(HANDLE, DWORD, SIZE_T);
+static LPVOID (WINAPI *r_HeapReAlloc)(HANDLE, DWORD, LPVOID, SIZE_T);
+static LPVOID WINAPI hk_HeapAlloc(HANDLE h, DWORD fl, SIZE_T n) { return r_HeapAlloc(h, fl | HEAP_ZERO_MEMORY, n); }
+static LPVOID WINAPI hk_HeapReAlloc(HANDLE h, DWORD fl, LPVOID p, SIZE_T n) { return r_HeapReAlloc(h, fl | HEAP_ZERO_MEMORY, p, n); }
+
 static void *getp(const char *dll, const char *fn)
 {
     HMODULE m = GetModuleHandleA(dll);
@@ -273,6 +280,12 @@ void crash_hooks_install(void)
         int (WINAPI *ga)(HANDLE) = getp("user32.dll", "GetAwarenessFromDpiAwarenessContext");
         p_SetThreadDpiAwarenessContext = getp("user32.dll", "SetThreadDpiAwarenessContext");
         g_proc_dpi_aware = gt && ga && ga(gt()) != 0;
+    }
+    if (GetPrivateProfileIntW(L"Patch", L"ZeroHeap", 1, g_ini)) {
+        r_HeapAlloc = getp("kernel32.dll", "HeapAlloc");
+        r_HeapReAlloc = getp("kernel32.dll", "HeapReAlloc");
+        iat_hook(g_exe, "kernel32.dll", "HeapAlloc", (void *)hk_HeapAlloc);
+        iat_hook(g_exe, "kernel32.dll", "HeapReAlloc", (void *)hk_HeapReAlloc);
     }
     r_DefWindowProcA = getp("user32.dll", "DefWindowProcA");
     if (GetPrivateProfileIntW(L"Patch", L"FixNullDefWindowProc", 1, g_ini))

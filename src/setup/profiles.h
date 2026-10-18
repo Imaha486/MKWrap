@@ -114,6 +114,13 @@ static const mk_profile_t g_profiles[] = {
       L"; CD の中身の場所 (空欄 = このフォルダ)。ドライブ文字は空欄なら空いている文字を自動で使います\r\n"
       L"Path=\r\nLetter=\r\nLabel=POPNPOP\r\n",
       L"; 元は全画面専用のため、枠付きの窓で表示します (Alt+Enter で全画面)\r\nModeChangeFullscreen=0\r\n" },
+    { L"wd1500.exe", L"ワルキューレの伝説",
+      L"; 元のフレーム同期処理はリブルラブルと同じく待ちが抜ける作りのため、下の [Patch] で置き換えて 60.606Hz にしています\r\n"
+      L"TargetHz=60.606\r\n",
+      L"; ゲームの初期設定 (1P): 移動=カーソルキー 攻撃=P ジャンプ=O クレジット=F2 スタート=F3\r\n"
+      STD_DIR L"A=O\r\nB=P\r\nX=P\r\nY=O\r\n" STD_SYS,
+      L"FrameSync=4155f3,framewait,415614,expect=FF 15 E0 E2 43 00\r\n",
+      L"", NULL, NULL },
     { L"bublbobl.exe", L"バブルボブル",
       L"; 元は 16ms 間隔 (62.5Hz) で動くため、時計を遅らせてアーケード (タイトー) の 59.185Hz に合わせます\r\n"
       L"GameHz=62.5\r\nTargetHz=59.185\r\n",

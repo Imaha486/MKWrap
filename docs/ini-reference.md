@@ -103,6 +103,7 @@ CTRL LCTRL RCTRL ALT LALT RALT INSERT DELETE HOME END PGUP PGDN PAUSE NUM0`～`N
 
 | キー | 既定 | 内容 |
 |---|---|---|
+| ZeroHeap | 1 | ゲームが確保するメモリ (HeapAlloc / HeapReAlloc) を 0 で埋める。初期化していないメモリを使う古いゲームの表示化け対策 (ワルキューレの伝説) |
 | FixNullDefWindowProc | 1 | ゲームが窓ハンドル NULL で `DefWindowProcA` を呼んだとき、Windows 11 で落ちないように補正する (WM_CTLCOLOR* は対象のコントロールで既定処理、それ以外は 0 を返す) |
 
 ## [Debug]

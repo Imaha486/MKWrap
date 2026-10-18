@@ -275,6 +275,11 @@ void vwin_present(vwin_t *w, int frame)
     vwin_present_now(w);
 }
 
+/* キャンバスの排他 (DirectDraw のプライマリへの書き込みと表示を同時に行わない) */
+static int g_cs_ok;
+void vwin_lock(void) { if (g_cs_ok) EnterCriticalSection(&g_cs); }
+void vwin_unlock(void) { if (g_cs_ok) LeaveCriticalSection(&g_cs); }
+
 /* 案内の文字をキャンバスに重ねる (表示の間だけ。戻すための元の画素を返す) */
 static DWORD *overlay_draw(vwin_t *w, RECT *box)
 {
@@ -795,7 +800,14 @@ static int WINAPI hk_StretchDIBits(HDC dc, int x, int y, int w, int h, int sx, i
 {
     int r;
     dc = redirect_dc(dc);
-    r = r_StretchDIBits(dc, x, y, w, h, sx, sy, sw, sh, bits, bi, use, rop);
+    gdi_sync();
+    {   /* キャンバスへの描画は表示処理 (窓のスレッド) と同時に行わない (DC は複数スレッドから同時に使えない) */
+        int lk = vwin_from_canvas_dc(dc) != NULL;
+        if (lk) EnterCriticalSection(&g_cs);
+        r = r_StretchDIBits(dc, x, y, w, h, sx, sy, sw, sh, bits, bi, use, rop);
+        GdiFlush();
+        if (lk) LeaveCriticalSection(&g_cs);
+    }
     after_blit(dc, w, h);
     return r;
 }
@@ -804,7 +816,14 @@ static int WINAPI hk_SetDIBitsToDevice(HDC dc, int x, int y, DWORD w, DWORD h, i
 {
     int r;
     dc = redirect_dc(dc);
-    r = r_SetDIBitsToDevice(dc, x, y, w, h, sx, sy, st, n, bits, bi, use);
+    gdi_sync();
+    {   /* キャンバスへの描画は表示処理 (窓のスレッド) と同時に行わない (DC は複数スレッドから同時に使えない) */
+        int lk = vwin_from_canvas_dc(dc) != NULL;
+        if (lk) EnterCriticalSection(&g_cs);
+        r = r_SetDIBitsToDevice(dc, x, y, w, h, sx, sy, st, n, bits, bi, use);
+        GdiFlush();
+        if (lk) LeaveCriticalSection(&g_cs);
+    }
     after_blit(dc, (int)w, (int)h);
     return r;
 }
@@ -812,7 +831,14 @@ static BOOL WINAPI hk_BitBlt(HDC dc, int x, int y, int w, int h, HDC src, int sx
 {
     BOOL r;
     dc = redirect_dc(dc);
-    r = r_BitBlt(dc, x, y, w, h, src, sx, sy, rop);
+    gdi_sync();
+    {   /* キャンバスへの描画は表示処理 (窓のスレッド) と同時に行わない (DC は複数スレッドから同時に使えない) */
+        int lk = vwin_from_canvas_dc(dc) != NULL;
+        if (lk) EnterCriticalSection(&g_cs);
+        r = r_BitBlt(dc, x, y, w, h, src, sx, sy, rop);
+        GdiFlush();
+        if (lk) LeaveCriticalSection(&g_cs);
+    }
     after_blit(dc, w, h);
     return r;
 }
@@ -820,7 +846,14 @@ static BOOL WINAPI hk_StretchBlt(HDC dc, int x, int y, int w, int h, HDC src, in
 {
     BOOL r;
     dc = redirect_dc(dc);
-    r = r_StretchBlt(dc, x, y, w, h, src, sx, sy, sw, sh, rop);
+    gdi_sync();
+    {   /* キャンバスへの描画は表示処理 (窓のスレッド) と同時に行わない (DC は複数スレッドから同時に使えない) */
+        int lk = vwin_from_canvas_dc(dc) != NULL;
+        if (lk) EnterCriticalSection(&g_cs);
+        r = r_StretchBlt(dc, x, y, w, h, src, sx, sy, sw, sh, rop);
+        GdiFlush();
+        if (lk) LeaveCriticalSection(&g_cs);
+    }
     after_blit(dc, w, h);
     return r;
 }
@@ -1017,6 +1050,7 @@ void win_hooks_install(void)
 {
     LoadLibraryA("user32.dll"); LoadLibraryA("gdi32.dll");
     InitializeCriticalSection(&g_cs);
+    g_cs_ok = 1;
     r_CreateWindowExA = GP("user32.dll", "CreateWindowExA");
     r_CreateWindowExW = GP("user32.dll", "CreateWindowExW");
     r_MoveWindow = GP("user32.dll", "MoveWindow");
