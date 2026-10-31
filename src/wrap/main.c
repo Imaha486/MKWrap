@@ -71,7 +71,16 @@ void cfg_load(void)
     g_cfg.desktop_bpp = ini_int(L"Display", L"DesktopBpp", 32);
     g_cfg.hide_cursor_fs = ini_int(L"Display", L"HideCursorInFullscreen", 1);
     g_cfg.ignore_mode_change = ini_int(L"Display", L"IgnoreModeChange", 1);
-    g_cfg.virtualize_window = ini_int(L"Display", L"VirtualizeWindow", 1);
+    {   /* DirectDraw の扱い: auto (既定) / emulate / native
+         * MKWrap が描けるのは 2D と DirectX 6 の Direct3D まで。それ以外の Direct3D を使うゲームでは本物 (または dgVoodoo2 などの ddraw.dll) に任せる */
+        wchar_t m[32];
+        GetPrivateProfileStringW(L"Display", L"DirectDraw", L"auto", m, 32, g_ini);
+        if (!_wcsicmp(m, L"native")) g_cfg.ddraw_native = 1;
+        else if (!_wcsicmp(m, L"emulate")) g_cfg.ddraw_native = 0;
+        else g_cfg.ddraw_native = 0;   /* auto: ゲームが Direct3D を求めた時点で native に切り替えて起動し直す (ddraw_emu.c) */
+    }
+    /* 本物の DirectDraw に任せる場合、ゲームは実際の窓に直接描くので窓の仮想化 (拡大) は既定で行わない */
+    g_cfg.virtualize_window = ini_int(L"Display", L"VirtualizeWindow", g_cfg.ddraw_native ? 0 : 1);
     g_cfg.aspect = ini_dbl(L"Display", L"Aspect", 0);
     ini_str(L"Display", L"Renderer", "auto", tmp, sizeof tmp);
     g_cfg.renderer = !_stricmp(tmp, "gdi") ? 1 : 0;
@@ -79,6 +88,9 @@ void cfg_load(void)
     /* 未指定なら Fullscreen に従う (古い INI でも Fullscreen=0 なら窓のまま) */
     g_cfg.mode_fullscreen = ini_int(L"Display", L"ModeChangeFullscreen", g_cfg.fullscreen);
     g_cfg.resizable = ini_int(L"Display", L"Resizable", 1);
+    g_cfg.keep_active = ini_int(L"Display", L"KeepActive", 0);
+    ini_str(L"Display", L"Movie", "auto", tmp, sizeof tmp);
+    g_cfg.movie = !_stricmp(tmp, "play") ? 1 : !_stricmp(tmp, "skip") ? 2 : 0;
     g_cfg.frame_popup = ini_int(L"Display", L"FramePopupWindow", 1);
     ini_str(L"Display", L"FullscreenKey", "ENTER", tmp, sizeof tmp);
     g_cfg.fs_key_vk = keyname_to_vk(tmp);
@@ -88,6 +100,10 @@ void cfg_load(void)
     g_cfg.time_scale = ini_dbl(L"Timing", L"TimeScale", 1.0);
     if (g_cfg.time_scale <= 0.01) g_cfg.time_scale = 1.0;
     g_cfg.precise_timer = ini_int(L"Timing", L"PreciseTimer", 1);
+    {   /* Windows の起動からの時間が長いと float で時刻を扱うゲームが進まなくなるため、既定では起動 10 分後の値から始める */
+        ini_str(L"Timing", L"TickBase", "600000", tmp, sizeof tmp);
+        g_cfg.tick_base = !_stricmp(tmp, "uptime") ? -1 : _atoi64(tmp);
+    }
     {   /* GameHz と TargetHz から倍率を求める指定方法 */
         double ghz = ini_dbl(L"Timing", L"GameHz", 0), thz = ini_dbl(L"Timing", L"TargetHz", 0);
         if (ghz > 0 && thz > 0) g_cfg.time_scale = thz / ghz;
@@ -99,6 +115,7 @@ void cfg_load(void)
     g_cfg.deadzone = ini_int(L"Input", L"Deadzone", 35);
     g_cfg.stick_dirs = ini_int(L"Input", L"StickDirections", 8);
     g_cfg.hide_joysticks = ini_int(L"Input", L"HideJoysticks", 1);
+    g_cfg.bg_input = ini_int(L"Input", L"BackgroundInput", 0);
     g_cfg.background_input = ini_int(L"Input", L"BackgroundInput", 0);
     g_cfg.post_messages = ini_int(L"Input", L"PostKeyMessages", 2);
     ini_str(L"Input", L"PauseKey", "PAUSE", tmp, sizeof tmp);
@@ -140,6 +157,7 @@ HRESULT WINAPI mk_DirectInputCreateA(HINSTANCE h, DWORD ver, void **out, void *o
     if (!f) return E_FAIL;
     hr = f(h, ver, out, outer);
     mkw_log("DirectInputCreateA(ver=%x) = %08lx\n", (unsigned)ver, hr);
+    mkw_fix_cwd("DirectInputCreateA の後");
     if (SUCCEEDED(hr) && out && *out) dinput_wrap_object(*out, 0);
     return hr;
 }
@@ -196,9 +214,10 @@ static void mkw_init(void)
     }
     GetModuleFileNameA(NULL, path, MAX_PATH);
     mkw_log("MKWrap " MKW_VERSION " 起動: %s\n", path);
+    mkw_log("DirectDraw: %s\n", g_cfg.ddraw_native ? "置き換えない (DirectDraw=native)" : "MKWrap のエミュレーション");
     mkw_log("Scale=%.2f Fullscreen=%d Refresh=%.3f TimerHz=%.3f TimeScale=%.3f\n",
             g_cfg.scale, g_cfg.fullscreen, g_cfg.refresh, g_cfg.timer_hz, g_cfg.time_scale);
-    if (ini_int(L"Display", L"DpiAware", 1)) {
+    if (ini_int(L"Display", L"DpiAware", g_cfg.ddraw_native ? 0 : 1)) {
         /* 高DPI環境で Windows によるぼやけた拡大を避ける (ダイアログは Per-Monitor V2 で自動調整される) */
         typedef BOOL (WINAPI *ctx_t)(HANDLE);
         HMODULE u = GetModuleHandleA("user32.dll");
@@ -213,6 +232,7 @@ static void mkw_init(void)
     crash_hooks_install();
     patches_apply();
     input_init();
+    { void filemon_install(void); filemon_install(); }
     { void watchdog_start(void); watchdog_start(); }
 }
 

@@ -59,6 +59,7 @@ static int create_device(d3dctx_t *c, int w, int h)
     if (FAILED(hr)) { mkw_log("D3D9: CreateDevice 失敗 %08lx\n", hr); c->dev = NULL; return 0; }
     c->bw = w; c->bh = h;
     mkw_log("D3D9: デバイス作成 %dx%d\n", w, h);
+    mkw_fix_cwd("Direct3D9 のデバイス作成の後");
     return 1;
 }
 

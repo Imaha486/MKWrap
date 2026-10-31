@@ -37,6 +37,7 @@ void frame_limit(void)
     g_frames++;
     if (g_cfg.log && now - g_fps_t0 >= 5.0) {
         mkw_log("画面転送 %.3f fps / GetTickCount %.1f/s timeGetTime %.1f/s\n", g_frames / (now - g_fps_t0), g_cnt_gtc / (now - g_fps_t0), g_cnt_tgt / (now - g_fps_t0));
+        { void msgwait_report(void); msgwait_report(); }
         g_cnt_gtc = g_cnt_tgt = 0;
         { int i; for (i = 0; i < 16 && g_callers[i].ra; i++) { mkw_log("  呼出元 %p: %.1f/s\n", g_callers[i].ra, g_callers[i].n / 5.0); g_callers[i].n = 0; } }
         g_frames = 0; g_fps_t0 = now;
@@ -182,8 +183,9 @@ void timing_hooks_install(void)
     r_timeKillEvent = (void *)GetProcAddress(wm, "timeKillEvent");
     r_GetTickCount = (void *)GetProcAddress(k32, "GetTickCount");
     r_QueryPerformanceCounter = (void *)GetProcAddress(k32, "QueryPerformanceCounter");
-    g_tick_base = r_GetTickCount() - (DWORD)(mkw_now() * 1000.0);
-    if (g_cfg.time_scale != 1.0 || g_cfg.precise_timer) {
+    if (g_cfg.tick_base >= 0) g_tick_base = (DWORD)g_cfg.tick_base;
+    else g_tick_base = r_GetTickCount() - (DWORD)(mkw_now() * 1000.0);
+    if (g_cfg.time_scale != 1.0 || g_cfg.precise_timer || g_cfg.tick_base >= 0) {
         iat_hook(g_exe, "winmm.dll", "timeGetTime", (void *)hk_timeGetTime);
         iat_hook(g_exe, "kernel32.dll", "GetTickCount", (void *)hk_GetTickCount);
     }

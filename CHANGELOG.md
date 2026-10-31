@@ -1,5 +1,107 @@
 # 変更履歴
 
+## 1.6.10
+- ロックマン DASH: パッドの割り当てを PS 版の説明書の配置に合わせた Xbox の配置に変更。
+  ゲームは DirectInput のボタン番号を当時の PS 風パッド向けに決め打ちしており (0=× 1=○ 2=□ 3=△ 5=R2 6=L1 7=R1 8=START 9=SELECT、
+  十字キー (POV) は読まない)、Xbox のパッドでは RB=R2・Back=L1・Start=R1 のようにずれていたため、パッドはゲームに見せず (HideJoysticks=1)、
+  ゲームの初期設定のキー (△=Z ×=X □=C ○=V L1=Delete L2=Insert R1=PageDown R2=PageUp START=Enter SELECT=右Shift) に割り当てる。
+  A=× B=○ X=□ Y=△ LB=L1 RB=R1 RT=R2 LT=L2 Start=START Back=SELECT、十字キー/左スティック=移動
+
+## 1.6.9
+- ゲームの `MsgWaitForMultipleObjects` で、待ち対象 (イベント) を窓のメッセージより先に調べるようにした。
+  Windows では窓にメッセージ (タイマー・再描画など) が来ていると待ち対象より先に「入力あり」が返るため、
+  ロックマン DASH が DirectSound の通知 (ストリーミング再生の次の部分の読み込み) を受け取れず、
+  ナレーションや BGM の最初の数秒 (バッファ 128KB 分) が繰り返し流れていた
+- ゲームが前面に無いときは、キーボード・ゲームパッドの入力をゲームに渡さないようにした (`[Input] BackgroundInput=0`、既定)。
+  DirectInput のキーボード (GetDeviceState / GetDeviceData)、ジョイスティック (中央・何も押していない状態を返す)、GetAsyncKeyState が対象。
+  ゲームがバックグラウンドでも入力を読む設定にしている場合も含む。1 で従来どおり
+- `Log=1` で MsgWaitForMultipleObjects の結果の内訳を記録
+
+## 1.6.8
+- `GetTickCount` / `timeGetTime` が返す時刻を、既定で「Windows の起動から 10 分後」の値から始めるようにした (`[Timing] TickBase`、既定 600000。
+  `uptime` で従来どおり実際の起動からの時間)。
+  ロックマン DASH は次のフレームの時刻を単精度浮動小数点 (float) で持っており、Windows を起動してから長時間 (数日) たっていると
+  時刻の精度が 1 フレーム (33ms) より粗くなって、オープニングで画面が一度も更新されないまま止まっていた (ナレーションだけ流れる)。
+  Windows 9x の頃は毎日再起動するのが普通だったため表に出なかった問題で、Wine で TickBase を大きくすると同じ症状を再現できた。
+  49.7 日で時刻が一周する問題も避けられる
+
+## 1.6.7
+- 調査用: 画面の更新が止まったとき (Log=1)、ゲームの変数の領域を mkwrap_hang_data.bin に書き出す (ミニダンプに入らないため)。
+  `Log=2` では、ゲームが開いたファイルをすべて記録する
+
+## 1.6.6
+- Direct3D (DirectX 6) の描画用デバイスを、見えない窓ではなくゲームの窓に結び付けるようにした
+  (Windows 11 でゲームの窓の左上に 16x16 の白い四角が出ていた件への対処)
+- `KeepActive=1` のとき、窓は応答しているのに画面の更新が 3 秒止まったら、ゲームに `WM_ACTIVATEAPP` (アクティブ) を伝え直す
+
+## 1.6.5
+- MKSetup: インストーラで展開した後、CD の直下にあるフォルダのうちゲームの実行ファイルが `フォルダ名\` で参照しているもの
+  (ロックマン DASH の `Dat` `Sph` `BGM` など) を、展開先にも同じ構造で用意するようにした。
+  インストーラがフォルダ無しで展開していた同じ名前・大きさのファイルは移動し、無いものは CD からコピーする
+- MKWrap: `DAT\INIT_DAT.BIN` のようなフォルダ付きの相対パスが見つからない場合、ゲームのフォルダ直下に同じ名前のファイルがあればそれを開く
+  (フォルダ無しで展開済みの環境の救済)
+- ロックマン DASH が黒い画面のまま止まる原因は、データがフォルダ無しで展開されていたことだった
+  (1.6.4 の作業フォルダの見張りは保険として残す)
+
+## 1.6.4
+- 作業フォルダの見張りを追加。ゲーム以外 (ドライバなど) が途中で作業フォルダを書き換えると、相対パスでデータを開くゲームが
+  「パスが見つからない」まま止まるため、ゲームが相対パスのファイルを開く前と、DirectInput / DirectSound / Direct3D の初期化の後に、
+  起動時の作業フォルダへ戻す (戻したときは何が原因だったかを mkwrap.log に記録)。
+  ロックマン DASH が Windows 11 で `DAT\INIT_DAT.BIN` を開けず (エラー 3 = パスが見つからない) 黒い画面のまま止まる問題への対処
+
+## 1.6.3
+- 調査用: `Log=1` のとき、ゲームの `CreateFileA` のうち失敗したもの・100ms 以上かかったものを記録し、
+  画面の更新が止まったときに直近のファイルを開く処理の回数・失敗数・戻ってきていないファイルを記録する
+  (ロックマン DASH が Windows 11 で `DAT\INIT_DAT.BIN` を開く処理の中で止まっている件の調査用)
+
+## 1.6.2
+- ゲームの動画 (`mciSendString` の avivideo) で、映像の形式を伸長できる部品がこの PC に無い場合 (Indeo 5 など) は、
+  再生せずに「再生が終わった」ことをゲームへ通知して飛ばすようにした (`[Display] Movie=auto`、play / skip も指定可)。
+  ロックマン DASH の CAPCOM.AVI で「圧縮解除プログラム 'vids:iv50' が見つからない」と表示される問題への対処
+- DirectInput のジョイスティック: 取り直しても「入力が失われた」(DIERR_INPUTLOST) のままの場合は「取得していない」と返す
+  (失われる → Acquire を繰り返して固まるゲームがあるため)。ジョイスティックの協調レベルは非排他・バックグラウンドにする
+  (`[Input] JoystickExclusive=1` で元のまま)。ジョイスティックの作成・取得の失敗を記録
+- `Log=1` のとき、窓は応答しているのに画面の更新が 8 秒止まったら、全スレッドの状態を mkwrap_hang.log / .dmp に 1 回記録する
+
+## 1.6.1
+- `[Display] KeepActive` を追加 (既定 0)。1 にすると、他のアプリに切り替わってもゲームに `WM_ACTIVATEAPP` (非アクティブ) を伝えない。
+  ロックマン DASH は非アクティブの通知を受けると描画を止めて待つ作りで、Windows 11 では起動直後に
+  (黒い画面や左上の白い四角のまま) 止まってしまうことがあったため、タイトル別設定で KeepActive=1 にした
+- `Log=1` で `WM_ACTIVATEAPP` を記録
+- Direct3D 用の隠し窓をアクティブにならない窓 (WS_EX_NOACTIVATE) にした
+
+## 1.6
+- Direct3D (DirectX 6 世代: IDirect3D3 / IDirect3DDevice3) を MKWrap の DirectDraw エミュレーションで描画するようにした。
+  3D の描画は Direct3D 9 で行い、Flip や Lock / Blt / GetDC の前に描画結果をサーフェス (DIB) へ読み戻すので、
+  窓の拡大・擬似フルスクリーン・リサイズなど 2D のゲームと同じ表示機能がそのまま使える。dgVoodoo2 などの ddraw.dll は不要。
+  - 対応: EnumDevices / CreateDevice / CreateViewport / CreateMaterial / CreateLight / CreateVertexBuffer / EnumZBufferFormats、
+    DrawPrimitive / DrawIndexedPrimitive (Strided / VB / Begin～End も)、レンダーステート (DirectX 6 の旧ステートは Direct3D 9 のものへ変換)、
+    テクスチャステージ、変換行列、材質とライト、ビューポートの Clear、テクスチャ (16/32 ビット、パレット、カラーキー透過)、Z バッファ
+  - 画面のロックなどで Direct3D 9 のデバイスが失われた場合は作り直してステートを設定し直す
+  - DirectX 6 以外の Direct3D (IDirect3D / IDirect3D2 / IDirect3D7) を求められた場合は、これまでどおり auto で本物の DirectDraw に切り替える
+  - DirectDraw の性能情報に DDCAPS_3D、Z バッファ・テクスチャ・3D デバイスのサーフェスを追加 (これを見て 3D を使うか決めるゲームがある)
+- ロックマン DASH: 上記により `DirectDraw=auto` (MKWrap が描画) に変更。窓表示 (拡大・マウスでのリサイズ)、Alt+Enter の擬似フルスクリーンに対応。
+  ゲームが全画面に切り替えても `Fullscreen` の設定どおりに表示する (`ModeChangeFullscreen=0`)
+- MCI の動画 (`mciSendString` の `window ... handle` + `put ... destination`) を、拡大した窓の実際の表示位置に合わせるようにした。
+  動画の再生中は MKWrap の画面表示で上書きしない
+- DirectDraw の排他モードで画面モードを設定したとき、窓の論理サイズだけでなく実際の窓の大きさも画面モードに合わせるようにした
+  (ロックマン DASH でムービーの後の窓が画面いっぱいの大きさのままになっていた)
+
+## 1.5.1
+- DirectDraw=native のとき、本物の DirectDraw の SetCooperativeLevel / SetDisplayMode の結果と窓の状態を mkwrap.log に記録 (Log=1)。
+  全画面の設定に失敗したら、窓を前面に出して再試行し、それでも失敗すれば付加フラグ (FPUSETUP など) を外して再試行する
+  (ロックマン DASH で「SetCooperativeLevel to fullscreen Error!」が出る件の調査用)
+
+## 1.5
+- Direct3D (DirectX 3～7) を使うゲームへの対応: `[Display] DirectDraw` (auto / emulate / native)。
+  MKWrap の DirectDraw は 2D 専用のため、native では DirectDraw を置き換えず (本物、または同じフォルダの dgVoodoo2 などの ddraw.dll に任せ)、
+  窓の仮想化もしない。入力・速度・レジストリ・異常終了の記録などはそのまま使える。DPI 対応も既定で切る (窓が小さくならないように)。
+  auto (既定) では、ゲームが Direct3D を求めた時点で INI を native に書き換えて自動的に起動し直す。
+  MKWrap が ddraw.dll として置かれている場合も、native では本物の ddraw.dll へ転送する
+- 対応タイトル追加: ロックマン DASH 鋼の冒険心 (rockman.exe、Direct3D)。DirectDraw=native、パッドはゲームに直接見せる
+- MKSetup: 実行ファイルに "Direct3D" の文字列があるゲームは Direct3D 用の設定で INI を作る。
+  タイトル別設定にある項目は、既定の項目と二重に書かないようにした
+
 ## 1.4.2
 - ワルキューレの伝説でキャラクタ (スプライト) の色が化ける問題を修正。
   ゲームが確保したメモリ (ヒープ) を初期化せずに色の変換結果の判定に使っており、Windows 9x では新しいメモリがほぼ 0 だったため

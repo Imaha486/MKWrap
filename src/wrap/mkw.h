@@ -6,7 +6,7 @@
 #include <windows.h>
 #include <stdio.h>
 
-#define MKW_VERSION "1.4.2"
+#define MKW_VERSION "1.6.10"
 
 /* ---------------- 設定 ---------------- */
 typedef struct {
@@ -22,18 +22,23 @@ typedef struct {
     int    hide_cursor_fs;
     int    ignore_mode_change;
     int    virtualize_window; /* 0にすると窓の仮想化を行わない */
+    int    ddraw_native;   /* 1 = DirectDraw を置き換えない (Direct3D を使うゲーム) */
     double aspect;         /* 表示アスペクト補正 (0=画素等倍) */
     int    renderer;       /* 0=自動(D3D9) 1=GDI */
     int    mode_fullscreen; /* ゲームが全画面にしたとき擬似フルスクリーンにする */
     int    frame_popup;     /* 枠なし窓を窓表示するときは枠を付ける */
     int    vsync;
     int    resizable;       /* 窓の大きさをマウスで変えられるようにする */
+    int    movie;           /* MCI の動画: 0 = 再生できなければ飛ばす / 1 = そのまま / 2 = 常に飛ばす */
+    int    bg_input;        /* 1 = ゲームが前面に無いときもキー・パッドの入力を渡す */
+    int    keep_active;     /* 他のアプリに切り替えてもゲームには非アクティブを伝えない (止まらない) */
     int    dialog_dpi;      /* 0=ゲームと同じ 1=ダイアログは DPI 非対応として作る (Windows が拡大) */
     /* [Timing] */
     double refresh;        /* 画面転送の上限レート Hz (0=無制限) */
     double timer_hz;       /* timeSetEvent 周期を置き換え (0=無効) */
     double time_scale;     /* timeGetTime 等の進み方の倍率 (1=等速) */
     int    precise_timer;  /* GetTickCount/timeGetTime を高精度化 */
+    long long tick_base;   /* GetTickCount/timeGetTime の起動時の値 (-1 = 実際の起動からの時間) */
     double framewait_hz;   /* [Patch] framewait の待ち間隔 */
     /* [Input] */
     int    input_enable;
@@ -59,6 +64,8 @@ extern wchar_t g_gamedir[MAX_PATH];
 extern wchar_t g_ini[MAX_PATH];
 
 void cfg_load(void);
+void mkw_fix_cwd(const char *where);   /* 作業フォルダが書き換えられていたら起動時のものに戻す */
+extern volatile LONG g_mkw_frames;   /* ゲームが画面を更新した回数 (DirectDraw のプライマリ) */
 void mkw_log(const char *fmt, ...);
 
 /* ---------------- フック ---------------- */

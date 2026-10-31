@@ -97,6 +97,33 @@
 - パッド: 十字キー/左スティック左右 = 移動、A/Y = ジャンプ、B/X = あわ、Back = クレジット、Start = スタート、RB = 2P スタート。
 - 速度: タイマー (timeGetTime) で 16ms ごとに 1 フレーム (62.5Hz) → アーケードの 59.185Hz に合わせて `GameHz=62.5 TargetHz=59.185`。
 
+## Direct3D を使うタイトル
+
+### ロックマン DASH 鋼の冒険心 (rockman.exe)
+- データは CD 上の `Dat` `Sph` `BGM` フォルダにあり、ゲームは `DAT\INIT_DAT.BIN` のように相対パスで開きます。
+  MKSetup 1.6.4 までは、これらをフォルダ無しで展開先の直下に置いていたため、起動直後に黒い画面のまま止まっていました
+  (ファイルが見つからず読み込みを繰り返す)。1.6.5 からは CD と同じフォルダ構造で展開します。
+  既にフォルダ無しで展開してある場合も、MKWrap がフォルダ直下の同じ名前のファイルを開くので動きます。
+- Direct3D (DirectX 6、IDirect3D3) で描画するゲームです。Windows 10/11 では本物の DirectDraw で
+  「SetCooperativeLevel to fullscreen Error!」となって起動しないことがありますが、MKWrap 1.6 からは
+  DirectDraw と Direct3D を MKWrap が受け持ち (3D は Direct3D 9 で描画)、本物の DirectDraw を使いません。
+- 窓表示 (拡大・マウスでのリサイズ・最大化)、Alt+Enter の擬似フルスクリーンが使えます。
+  ゲームは全画面 (640x480・16 ビットカラー) に切り替える作りですが、`ModeChangeFullscreen=0` で `Fullscreen` の設定どおりに表示します。
+- 3D は 640x480 で描かれ、それを拡大して表示します (高い解像度で描き直す機能はありません)。
+  表示がおかしい場合は `DirectDraw=native` にすると、本物の DirectDraw (または同じフォルダに置いた dgVoodoo2 の ddraw.dll) に任せます。
+- キーボード (ゲームの初期設定): 移動 = カーソルキー、△ = Z、× = X (Space)、□ = C、○ = V、L1 = Delete、L2 = Insert、R1 = PageDown、R2 = PageUp、START = Enter、SELECT = 右 Shift。
+- パッド (1.6.10 から、PS 版の説明書の配置を Xbox の配置に合わせたもの): 十字キー/左スティック = 移動、A = × (ジャンプ/キャンセル)、B = ○ (調べる/決定)、
+  X = □ (ロックバスター)、Y = △ (特殊武器)、LB / RB = L1 / R1 (左右に向きを変える)、RT = R2 (ロックオン)、Start = START (メニュー)、Back = SELECT (全体マップ)。
+  ゲームは DirectInput のボタン番号を PS 風パッド向けに決め打ちしていて Xbox のパッドではずれるため、パッドはゲームに見せずキーに割り当てています。
+- Windows を起動してから長時間たった PC でオープニングが黒い画面のまま止まる問題は、ゲームが時刻を float で扱っていたためでした。MKWrap 1.6.8 からは GetTickCount を起動 10 分後の値から始めるので起きません (`[Timing] TickBase`)。
+- ゲームは非アクティブになると止まる作りのため、`KeepActive=1` で非アクティブを伝えないようにしています (1.6.1)。
+- オープニングムービー `CAPCOM.AVI` は Indeo 5 (IV50) 形式で、Windows 10/11 には再生用のコーデックが入っていません。
+  MKWrap 1.6.2 からは、映像を再生できない動画は自動で飛ばします (`Movie=auto`。再生が終わったことにしてゲームへ通知する)。
+  映像の形式を変換したファイルに差し替えた場合は再生され、表示位置は窓の拡大に合わせて直します
+  (例: `ffmpeg -i CAPCOM.AVI -c:v msvideo1 -pix_fmt rgb555le -q:v 2 -c:a copy out.avi`)。
+- ゲームパッドは DirectInput で直接ゲームに見せます。ゲームは「入力が失われた → 取り直す」を繰り返す作りのため、
+  取り直しても失われたままの場合は MKWrap が「取得していない」と返してループを抜けさせ、協調レベルも非排他・バックグラウンドにしています (1.6.2)。
+
 ## 第3弾 (セガゲーム本舗)
 
 ### ガンスターヒーローズ (GUNSTAR.exe)

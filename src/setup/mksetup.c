@@ -332,15 +332,17 @@ static int find_game_exe(const wchar_t *dir, wchar_t *out, int depth)
     return out[0] != 0;
 }
 
-static int file_contains(const wchar_t *path, const char *needle)
+static int file_contains_bin(const wchar_t *path, const BYTE *needle, DWORD n);
+static int file_contains(const wchar_t *path, const char *needle) { return file_contains_bin(path, (const BYTE *)needle, (DWORD)strlen(needle)); }
+static int file_contains_bin(const wchar_t *path, const BYTE *needle, DWORD n)
 {
     HANDLE h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-    HANDLE m; const BYTE *b; DWORD size, i, n = (DWORD)strlen(needle); int found = 0;
+    HANDLE m; const BYTE *b; DWORD size, i; int found = 0;
     if (h == INVALID_HANDLE_VALUE) return 0;
     size = GetFileSize(h, NULL);
     m = CreateFileMappingW(h, NULL, PAGE_READONLY, 0, 0, NULL);
     b = m ? (const BYTE *)MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0) : NULL;
-    if (b) for (i = 0; i + n <= size && !found; i++) if (b[i] == (BYTE)needle[0] && !memcmp(b + i, needle, n)) found = 1;
+    if (b) for (i = 0; i + n <= size && !found; i++) if (b[i] == needle[0] && !memcmp(b + i, needle, n)) found = 1;
     if (b) UnmapViewOfFile(b);
     if (m) CloseHandle(m);
     CloseHandle(h);
@@ -353,10 +355,43 @@ static const mk_profile_t *profile_for(const wchar_t *exe)
     b = b ? b + 1 : exe;
     for (i = 0; i < sizeof g_profiles / sizeof g_profiles[0]; i++) if (!_wcsicmp(b, g_profiles[i].exe)) return &g_profiles[i];
     if (file_contains(exe, "SEGA MEGADRIVE")) return &g_sega_profile;   /* セガゲーム本舗の他のタイトル */
+    /* Direct3D を使うゲーム (エラーメッセージなどに "Direct3D" の文字列がある)。
+     * GUID は DirectX SDK の dxguid ごと静的に入っている 2D のゲームも多いので使わない。
+     * 見落としても、実行時に Direct3D を求められた時点で MKWrap が設定を切り替えて起動し直す */
+    if (file_contains(exe, "Direct3D")) return &g_d3d_profile;
     return &g_generic_profile;
 }
 
 static void write_utf16(HANDLE h, const wchar_t *s) { DWORD w; WriteFile(h, s, (DWORD)(wcslen(s) * sizeof(wchar_t)), &w, NULL); }
+
+/* 項目ごとの既定値を書く。タイトル別設定 (p->display / timing / input) に同じ項目があればそちらを使う
+ * (INI は同じ項目が 2 回あると先の方が使われ、読む人にも紛らわしいため) */
+static int prof_has_key(const mk_profile_t *p, const wchar_t *key, size_t n)
+{
+    const wchar_t *src[3]; int i;
+    src[0] = p->display; src[1] = p->timing; src[2] = p->input;
+    for (i = 0; i < 3; i++) {
+        const wchar_t *t = src[i];
+        while (t && *t) {
+            if (!wcsncmp(t, key, n) && t[n] == L'=') return 1;
+            t = wcschr(t, L'\n'); if (t) t++;
+        }
+    }
+    return 0;
+}
+static void write_tpl(HANDLE h, const mk_profile_t *p, const wchar_t *s)
+{
+    while (*s) {
+        const wchar_t *e = wcschr(s, L'\n'), *eq;
+        size_t len = e ? (size_t)(e - s + 1) : wcslen(s);
+        wchar_t line[512];
+        if (len >= 512) len = 511;
+        wcsncpy(line, s, len); line[len] = 0;
+        eq = wcschr(line, L'=');
+        if (!(line[0] != L';' && line[0] != L'[' && eq && prof_has_key(p, line, (size_t)(eq - line)))) write_utf16(h, line);
+        s += len;
+    }
+}
 
 static int write_ini(const wchar_t *path, const mk_profile_t *p, const wchar_t *exename)
 {
@@ -371,7 +406,7 @@ static int write_ini(const wchar_t *path, const mk_profile_t *p, const wchar_t *
         L"; 同じフォルダの dinput.dll (または ddraw.dll) が MKWrap 本体です。表示・入力・速度を補正します。\r\n"
         L"; 使わない場合はその DLL を削除するだけで元に戻ります。\r\n");
     if (p->note) write_utf16(h, p->note);
-    write_utf16(h,
+    write_tpl(h, p,
         L"\r\n[Display]\r\n"
         L"; 窓表示の倍率 (小数可)。0 = 画面に収まる最大の整数倍\r\n"
         L"Scale=0\r\n"
@@ -393,11 +428,18 @@ static int write_ini(const wchar_t *path, const mk_profile_t *p, const wchar_t *
         L"IgnoreModeChange=1\r\n"
         L"; ゲームが全画面に切り替えたとき 1 = 擬似フルスクリーン / 0 = 窓のまま表示\r\n");
     write_utf16(h, p->display ? p->display : L"ModeChangeFullscreen=1\r\n");
-    write_utf16(h,
+    write_tpl(h, p,
+        L"; DirectDraw の扱い: auto = MKWrap が描く (2D と DirectX 6 の Direct3D)。それ以外の Direct3D を使うゲームは本物に切り替える\r\n"
+        L";                   emulate = 常に MKWrap の DirectDraw を使う / native = 置き換えない (本物か、同じフォルダの dgVoodoo2 などの ddraw.dll)\r\n"
+        L"DirectDraw=auto\r\n"
         L"; 枠のない窓を窓表示するときに、タイトルバーと枠を付ける\r\n"
         L"FramePopupWindow=1\r\n"
         L"; 1 = 窓の大きさをマウスで変えられるようにする (最大化も可。KeepAspect=1 なら縦横比を保つ)\r\n"
         L"Resizable=1\r\n"
+        L"; 1 = 他のアプリに切り替えても、ゲームには非アクティブになったことを伝えない (止まらずに動き続ける)\r\n"
+        L"KeepActive=0\r\n"
+        L"; ゲームの動画 (MCI の AVI): auto = この PC で映像を再生できない形式 (Indeo など) なら飛ばす / play = そのまま / skip = 常に飛ばす\r\n"
+        L"Movie=auto\r\n"
         L"; 1 = 高DPI対応として動かす (ぼやけ防止)\r\n"
         L"DpiAware=1\r\n"
         L"; DirectDraw に知らせる画面の色数 (32 または 16)\r\n"
@@ -407,7 +449,7 @@ static int write_ini(const wchar_t *path, const mk_profile_t *p, const wchar_t *
         L"; RefreshRate = 画面転送の上限 (0 = 制限しない)\r\n");
     write_utf16(h, p->timing);
     if (!wcsstr(p->timing, L"RefreshRate=")) write_utf16(h, L"RefreshRate=0\r\n");
-    write_utf16(h,
+    write_tpl(h, p,
         L"; 1 = GetTickCount/timeGetTime を 1ms 精度にする (Windows 標準は約 16ms 刻み)\r\n"
         L"PreciseTimer=1\r\n"
         L"\r\n[Input]\r\n"
@@ -494,6 +536,77 @@ static int deploy_wrapper(const wchar_t *dir)
     return 0;
 }
 
+
+/* CD 上のデータフォルダ (Dat / Sph / BGM など) を、ゲームが参照する場合は展開先にも同じ構造で用意する。
+ * インストーラが中身をフォルダ無しで展開していた場合 (同じ名前・大きさのファイルが展開先の直下にある) は移動、
+ * 無ければ CD からコピーする。ゲームは "DAT\INIT_DAT.BIN" のように相対パスで開くため、フォルダが無いと起動しない */
+static int g_fix_moved, g_fix_copied;
+static void fix_dir_rec(const wchar_t *src, const wchar_t *dst, const wchar_t *flatroot)
+{
+    WIN32_FIND_DATAW fd; HANDLE h; wchar_t pat[MAX_PATH * 2];
+    mk_mkdirs(dst);
+    mk_path_join(pat, MAX_PATH * 2, src, L"*");
+    h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        wchar_t s2[MAX_PATH * 2], d2[MAX_PATH * 2], flat[MAX_PATH * 2];
+        if (fd.cFileName[0] == L'.') continue;
+        mk_path_join(s2, MAX_PATH * 2, src, fd.cFileName);
+        mk_path_join(d2, MAX_PATH * 2, dst, fd.cFileName);
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) { fix_dir_rec(s2, d2, flatroot); continue; }
+        if (mk_file_exists(d2)) continue;
+        mk_path_join(flat, MAX_PATH * 2, flatroot, fd.cFileName);
+        {
+            WIN32_FILE_ATTRIBUTE_DATA a;
+            if (GetFileAttributesExW(flat, GetFileExInfoStandard, &a) && a.nFileSizeLow == fd.nFileSizeLow && a.nFileSizeHigh == fd.nFileSizeHigh &&
+                MoveFileW(flat, d2)) { g_fix_moved++; continue; }
+        }
+        if (CopyFileW(s2, d2, FALSE)) {
+            SetFileAttributesW(d2, GetFileAttributesW(d2) & ~FILE_ATTRIBUTE_READONLY);
+            g_fix_copied++;
+        } else mk_log(L"  コピー失敗: %ls\r\n", s2);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+}
+static void fix_cd_dirs(const wchar_t *src, const wchar_t *dst)
+{
+    wchar_t exe[MAX_PATH * 2], pat[MAX_PATH * 2];
+    WIN32_FIND_DATAW fd; HANDLE h, fh; BYTE *buf = NULL; DWORD size = 0, rd = 0, i;
+    if (!src || !find_game_exe(dst, exe, 1)) return;
+    fh = CreateFileW(exe, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (fh == INVALID_HANDLE_VALUE) return;
+    size = GetFileSize(fh, NULL);
+    buf = (BYTE *)malloc(size + 1);
+    if (buf && !ReadFile(fh, buf, size, &rd, NULL)) rd = 0;
+    CloseHandle(fh);
+    if (!buf || !rd) { free(buf); return; }
+    for (i = 0; i < rd; i++) if (buf[i] >= 'a' && buf[i] <= 'z') buf[i] -= 32;
+    mk_path_join(pat, MAX_PATH * 2, src, L"*");
+    h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) { free(buf); return; }
+    do {
+        char needle[MAX_PATH + 2]; int n, k, found = 0;
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.' || fd.cFileName[0] == L'_') continue;
+        if (!_wcsnicmp(fd.cFileName, L"directx", 7)) continue;
+        n = WideCharToMultiByte(CP_ACP, 0, fd.cFileName, -1, needle, MAX_PATH, NULL, NULL);
+        if (n <= 1) continue;
+        n--;
+        for (k = 0; k < n; k++) if (needle[k] >= 'a' && needle[k] <= 'z') needle[k] -= 32;
+        needle[n] = '\\'; needle[n + 1] = 0;
+        for (i = 0; i + n + 1 <= rd && !found; i++) if (buf[i] == (BYTE)needle[0] && !memcmp(buf + i, needle, n + 1)) found = 1;
+        if (found) {
+            wchar_t s2[MAX_PATH * 2], d2[MAX_PATH * 2];
+            mk_path_join(s2, MAX_PATH * 2, src, fd.cFileName);
+            mk_path_join(d2, MAX_PATH * 2, dst, fd.cFileName);
+            g_fix_moved = g_fix_copied = 0;
+            fix_dir_rec(s2, d2, dst);
+            mk_log(L"CD のフォルダ %ls をゲームが参照しているため展開先に用意しました (移動 %d / CD からコピー %d)\r\n", fd.cFileName, g_fix_moved, g_fix_copied);
+        }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    free(buf);
+}
+
 /* ---------------- 全体の流れ ---------------- */
 static int run_job(const wchar_t *src, const wchar_t *dst, int wrap)
 {
@@ -535,6 +648,7 @@ static int run_job(const wchar_t *src, const wchar_t *dst, int wrap)
     }
     if (r < 0) mk_log(L"※ 展開中にエラーがありました。\r\n");
     if (r == 0) { mk_log(L"展開されたファイルがありません。\r\n"); return -1; }
+    fix_cd_dirs(src, dst);
     mk_log(L"レジストリやスタートメニューは変更していません。\r\n");
     if (wrap) deploy_wrapper(dst);
     return r < 0 ? -1 : 0;

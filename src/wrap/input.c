@@ -386,9 +386,25 @@ void input_init(void)
 static SHORT (WINAPI *r_GetKeyState)(int);
 static BOOL (WINAPI *r_GetKeyboardState)(PBYTE);
 
+/* ゲーム (このプロセス) の窓が前面にあるか。前面に無いときはキー・パッドの入力を渡さない (BackgroundInput=0) */
+static int app_foreground(void)
+{
+    static DWORD last; static int cached = 1;
+    DWORD now = GetTickCount();
+    if (g_cfg.bg_input) return 1;
+    if (now - last >= 50) {
+        HWND f = GetForegroundWindow(); DWORD pid = 0;
+        if (f) GetWindowThreadProcessId(f, &pid);
+        cached = f && pid == GetCurrentProcessId();
+        last = now;
+    }
+    return cached;
+}
 static SHORT WINAPI hk_GetAsyncKeyState(int vk)
 {
-    SHORT r = r_GetAsyncKeyState(vk);
+    SHORT r;
+    if (!app_foreground() && !(vk >= VK_LBUTTON && vk <= VK_XBUTTON2)) return 0;
+    r = r_GetAsyncKeyState(vk);
     if (input_vk_down(vk & 255)) r |= (SHORT)0x8000;
     return r;
 }
@@ -420,6 +436,8 @@ static struct { void **vt; GetDeviceState_t gs; GetDeviceData_t gd; QI_t qi; Set
 #define MAXKB 8
 static struct { void *dev; BYTE sent[256]; DWORD seq; } g_kb[MAXKB];
 
+static void *g_joy[8];
+static int is_joy(void *dev) { int i; for (i = 0; i < 8; i++) if (dev && g_joy[i] == dev) return 1; return 0; }
 static int kb_index(void *dev) { int i; for (i = 0; i < MAXKB; i++) if (g_kb[i].dev == dev) return i; return -1; }
 
 static int find_dev_vt(void *obj) { int i; void **vt = *(void ***)obj; for (i = 0; i < MAXVT; i++) if (g_devvt[i].vt == vt) return i; return -1; }
@@ -429,6 +447,38 @@ static HRESULT WINAPI hk_dev_GetDeviceState(void *This, DWORD cb, void *data)
 {
     int v = find_dev_vt(This);
     HRESULT hr = g_devvt[v].gs(This, cb, data);
+    if (!app_foreground() && SUCCEEDED(hr) && data) {
+        /* 前面に無いときは「何も押していない」状態を返す */
+        if (kb_index(This) >= 0) { memset(data, 0, cb); return hr; }
+        if (is_joy(This) && (cb == sizeof(DIJOYSTATE) || cb == sizeof(DIJOYSTATE2))) {
+            static DIJOYSTATE2 center; static int have;
+            if (!have) { /* 中央の値: 前面にあるときに取れた値の軸ではなく、範囲の中央を使う */
+                DIPROPRANGE pr; int i; LONG *ax = &center.lX;
+                for (i = 0; i < 6; i++) {
+                    memset(&pr, 0, sizeof pr); pr.diph.dwSize = sizeof pr; pr.diph.dwHeaderSize = sizeof pr.diph;
+                    pr.diph.dwHow = DIPH_BYOFFSET; pr.diph.dwObj = (DWORD)(i * 4);
+                    if (SUCCEEDED(((HRESULT (WINAPI *)(void *, REFGUID, DIPROPHEADER *))(*(void ***)This)[5])(This, DIPROP_RANGE, &pr.diph)))
+                        ax[i] = (pr.lMin + pr.lMax) / 2;
+                }
+                for (i = 0; i < 4; i++) center.rgdwPOV[i] = 0xFFFFFFFF;
+                have = 1;
+            }
+            memcpy(data, &center, cb);
+            return hr;
+        }
+    }
+    if (is_joy(This)) {
+        /* ジョイスティック: 「失われた → Acquire → また失われた」を繰り返して固まるゲームがあるため、
+         * 取り直しても失われたままなら「取得していない」と返してループを抜けさせる */
+        static int nlog;
+        if (hr == DIERR_INPUTLOST) {
+            HRESULT ha = ((HRESULT (WINAPI *)(void *))(*(void ***)This)[7])(This);   /* Acquire */
+            hr = g_devvt[v].gs(This, cb, data);
+            if (nlog < 5) { nlog++; mkw_log("DirectInput: ジョイスティックの入力が失われました (Acquire=%08lx 再取得後=%08lx)\n", (unsigned long)ha, (unsigned long)hr); }
+            if (hr == DIERR_INPUTLOST) hr = DIERR_NOTACQUIRED;
+        } else if (FAILED(hr) && nlog < 5) { nlog++; mkw_log("DirectInput: ジョイスティック GetDeviceState=%08lx\n", (unsigned long)hr); }
+        return hr;
+    }
     if (kb_index(This) >= 0 && cb >= 256 && data) {
         int i;
         input_poll();
@@ -449,6 +499,7 @@ static HRESULT WINAPI hk_dev_GetDeviceData(void *This, DWORD cbo, void *rg, DWOR
     int v = find_dev_vt(This), k = kb_index(This);
     DWORD cap = inout ? *inout : 0;
     HRESULT hr = g_devvt[v].gd(This, cbo, rg, inout, fl);
+    if (!app_foreground() && SUCCEEDED(hr) && inout && rg) { *inout = 0; return hr; }   /* 前面に無いときの入力は捨てる */
     if (k >= 0 && inout && SUCCEEDED(hr) && cbo >= sizeof(DIDEVICEOBJECTDATA_DX3)) {
         DWORD n = *inout; int i;
         BYTE cur[256];
@@ -484,6 +535,12 @@ static HRESULT WINAPI hk_dev_SetCooperativeLevel(void *This, HWND h, DWORD fl)
         mkw_log("DirectInput: キーボードの排他モードを非排他に変更 (flags=%lx)\n", (unsigned long)fl);
         fl = (fl & ~DISCL_EXCLUSIVE) | DISCL_NONEXCLUSIVE;
     }
+    if (is_joy(This) && !GetPrivateProfileIntW(L"Input", L"JoystickExclusive", 0, g_ini)) {
+        /* ジョイスティックも非排他・バックグラウンドにする (窓の仮想化や KeepActive と食い違って取得に失敗し続けないように) */
+        DWORD nf = (fl & ~(DISCL_EXCLUSIVE | DISCL_FOREGROUND)) | DISCL_NONEXCLUSIVE | DISCL_BACKGROUND;
+        mkw_log("DirectInput: ジョイスティック SetCooperativeLevel flags=%lx → %lx\n", (unsigned long)fl, (unsigned long)nf);
+        fl = nf;
+    }
     return g_devvt[v].sc(This, h, fl);
 }
 
@@ -497,6 +554,7 @@ static HRESULT WINAPI hk_dev_QueryInterface(void *This, REFIID iid, void **out)
         if (k >= 0 && kb_index(*out) < 0) {
             int j; for (j = 0; j < MAXKB; j++) if (!g_kb[j].dev) { g_kb[j].dev = *out; break; }
         }
+        if (is_joy(This) && !is_joy(*out)) { int j; for (j = 0; j < 8; j++) if (!g_joy[j]) { g_joy[j] = *out; break; } }
         patch_device(*out);
     }
     return hr;
@@ -530,11 +588,16 @@ static HRESULT WINAPI hk_di_CreateDevice(void *This, REFGUID g, void **out, void
         return DIERR_DEVICENOTREG;
     }
     hr = g_divt[v].cd(This, g, out, outer);
+    mkw_fix_cwd("DirectInput CreateDevice の後");
     if (SUCCEEDED(hr) && out && *out) {
         if (IsEqualGUID(g, &GUID_SysKeyboard)) {
             int j; for (j = 0; j < MAXKB; j++) if (!g_kb[j].dev) { g_kb[j].dev = *out; break; }
             mkw_log("DirectInput: キーボードデバイス作成\n");
+        } else if (!IsEqualGUID(g, &GUID_SysMouse)) {
+            int j; for (j = 0; j < 8; j++) if (!g_joy[j]) { g_joy[j] = *out; break; }
+            mkw_log("DirectInput: ジョイスティックデバイス作成\n");
         }
+        else mkw_log("DirectInput: マウスデバイス作成\n");
         patch_device(*out);
     }
     return hr;
@@ -555,7 +618,11 @@ static HRESULT WINAPI hk_di_EnumDevices(void *This, DWORD type, void *cb, void *
         if (type == DIDEVTYPE_JOYSTICK) return DI_OK;
         return g_divt[v].ed(This, type, (void *)enum_filter, &c, fl);
     }
-    return g_divt[v].ed(This, type, cb, ref, fl);
+    {
+        HRESULT hr = g_divt[v].ed(This, type, cb, ref, fl);
+        mkw_fix_cwd("DirectInput EnumDevices の後");
+        return hr;
+    }
 }
 
 static HRESULT WINAPI hk_di_QueryInterface(void *This, REFIID iid, void **out)

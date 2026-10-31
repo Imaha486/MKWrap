@@ -15,6 +15,8 @@ src/
     win.c         窓の仮想化、拡大表示、擬似フルスクリーン、解像度変更の代替
     present_d3d9.c Direct3D9 による拡大表示
     ddraw_emu.c   DirectDraw 1～7 のソフトウェア実装
+    d3d6.c        Direct3D (DirectX 6: IDirect3D3 / IDirect3DDevice3) の実装
+    d3d6_be.c     その描画を Direct3D 9 で行う部分
     input.c       XInput → キー入力の変換 (DirectInput / Win32 API / メッセージ)
     timing.c      時計の補正、timeSetEvent の置き換え、画面転送のレート制限、一時停止
     patch.c       [Patch] の適用とフレーム待ち
@@ -100,6 +102,18 @@ DirectDraw の全画面用に作られた枠なし (WS_POPUP) の窓は、窓表
 すべてのサーフェスを DIB セクションで持ち、プライマリへの転送をキャンバスへ流します。
 窓モードのプライマリは画面座標で転送されるので、窓の原点を引いてキャンバス座標に変換します。
 排他モード (フルスクリーン) ではプライマリが専用バッファを持ち、Flip でキャンバスへ変換します。
+
+### Direct3D (DirectX 6)
+`IDirectDraw4::QueryInterface(IID_IDirect3D3)` で Direct3D を渡し、3D の描画は Direct3D 9 (見えない窓に作ったデバイス) で行います。
+
+- 3D の描画先になったサーフェス (バックバッファ) ごとに、Direct3D 9 のレンダーターゲットと Z バッファを作ります。
+  描画結果は Flip の直前と、ゲームが CPU でそのサーフェスを触る (Lock / Blt / BltFast / GetDC) 直前に DIB へ読み戻します。
+  逆に CPU で書き換えられた後は、次の 3D 描画の前に DIB の内容を Direct3D 9 側へ書き込みます。
+  こうして DIB に常に最新の絵があるので、表示 (窓の拡大・擬似フルスクリーン) は 2D のゲームと同じ経路で行われます。
+- テクスチャはサーフェスの別の顔 (`IDirect3DTexture2`) で、描画に使う時点で内容が変わっていれば A8R8G8B8 に変換して転送します。
+  カラーキーの色はアルファ 0 にし、`COLORKEYENABLE` はアルファテストで再現します。
+- DirectX 6 の頂点形式 (FVF) は Direct3D 9 とほぼ同じなので、頂点はそのまま `DrawPrimitiveUP` で描きます。
+  旧形式のレンダーステート (`TEXTUREMAPBLEND`、`TEXTUREMAG` など) はテクスチャステージ・サンプラーのステートに変換します。
 
 ### 入力
 XInput の状態を 4ms ごとに読み、割り当てたキーを

@@ -1,8 +1,7 @@
 /* DirectDraw ソフトウェアエミュレーション
  * サーフェスはすべて DIB セクションで持ち、プライマリへの転送を窓のキャンバスへ流して拡大表示する。
  * IDirectDraw/2/4/7, IDirectDrawSurface/2/3/4/7, IDirectDrawPalette, IDirectDrawClipper を実装 */
-#include "mkw.h"
-#include <ddraw.h>
+#include "ddraw_int.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -11,61 +10,6 @@ BOOL mkw_real_ClientToScreen(HWND h, LPPOINT p);
 void mode_change_fake(int w, int h, int bpp);
 void mode_change_fake2(int w, int h, int bpp, HWND hwnd);
 void vwin_register_ext(HWND h);
-
-typedef struct Surf Surf;
-typedef struct DDraw DDraw;
-typedef struct Pal Pal;
-typedef struct Clip Clip;
-
-typedef struct { void **vtbl; void *self; int ver; } IFACE;
-#define SELF(T, p) ((T *)((IFACE *)(p))->self)
-
-struct DDraw {
-    IFACE i[4];          /* 1,2,4,7 */
-    LONG ref;
-    HWND hwnd;
-    DWORD coop;
-    int mode_w, mode_h, mode_bpp;
-    Surf *primary;
-};
-
-struct Pal {
-    IFACE i;
-    LONG ref;
-    DWORD caps;
-    PALETTEENTRY e[256];
-    DDraw *dd;
-};
-
-struct Clip {
-    IFACE i;
-    LONG ref;
-    HWND hwnd;
-};
-
-struct Surf {
-    IFACE i[5];          /* 1,2,3,4,7 */
-    LONG ref;
-    DDraw *dd;
-    DWORD caps;
-    int w, h, bpp, pitch;
-    DWORD rmask, gmask, bmask;
-    HDC dc; HBITMAP bmp, oldbmp; BYTE *bits;
-    int primary;          /* プライマリサーフェス */
-    int virt;             /* 窓モードのプライマリ (実体はキャンバス) */
-    Surf *back;           /* フリップチェーンの次 */
-    Surf *front;          /* バックバッファの場合の親 */
-    Pal *pal;
-    Clip *clip;
-    DDCOLORKEY ck_src, ck_dst;
-    DWORD ckflags;
-    int dc_out;
-    BYTE *shadow; int sh_w, sh_h, sh_pitch; /* 窓モードプライマリの Lock 用 */
-    DWORD uniq;
-    double last_present;
-    int ext;              /* SetSurfaceDesc でアプリのメモリを使っている (DIB を持たない) */
-    HDC xdc; HBITMAP xbmp, xold; BYTE *xbits; /* ext 用 GetDC の一時 DIB */
-};
 
 static void **vt_dd[4], **vt_s[5], **vt_pal, **vt_clip;
 static DDraw *g_dd;
@@ -87,6 +31,7 @@ static int ver_index_dd(int v) { return v == 1 ? 0 : v == 2 ? 1 : v == 4 ? 2 : 3
 static int ver_index_s(int v) { return v == 1 ? 0 : v == 2 ? 1 : v == 3 ? 2 : v == 4 ? 3 : 4; }
 static void *dd_iface(DDraw *d, int v) { return &d->i[ver_index_dd(v)]; }
 static void *s_iface(Surf *s, int v) { return &s->i[ver_index_s(v)]; }
+void *mkw_s_iface(Surf *s, int v) { return s_iface(s, v); }
 
 static void fill_pf(DDPIXELFORMAT *pf, int bpp, DWORD r, DWORD g, DWORD b)
 {
@@ -396,8 +341,10 @@ static HRESULT do_fill(Surf *dst, RECT *dr_in, DWORD color)
 }
 
 /* プライマリの内容を窓へ */
+volatile LONG g_mkw_frames;
 static void surf_present(Surf *s, int frame)
 {
+    InterlockedIncrement(&g_mkw_frames);
     vwin_t *w;
     double now = mkw_now();
     if (s->front) s = s->front;
@@ -520,10 +467,14 @@ static Surf *new_surf(DDraw *dd)
     int i, v[5] = { 1, 2, 3, 4, 7 };
     for (i = 0; i < 5; i++) { s->i[i].vtbl = vt_s[i]; s->i[i].self = s; s->i[i].ver = v[i]; }
     s->ref = 1; s->dd = dd; s->uniq = 1;
+    d3d6_init_surface(s);
     return s;
 }
+static ULONG WINAPI s_Release(void *This);
 static void free_surf(Surf *s)
 {
+    d3d6_surface_freed(s);
+    if (s->zatt) { Surf *z = s->zatt; s->zatt = NULL; s_Release(&z->i[0]); }
     if (s->back && s->back != s && s->back->front == s) { Surf *b = s->back; s->back = NULL; b->front = NULL; free_surf(b); }
     if (s->dc) { SelectObject(s->dc, s->oldbmp); DeleteDC(s->dc); }
     if (s->bmp) DeleteObject(s->bmp);
@@ -546,7 +497,7 @@ static HRESULT WINAPI s_QueryInterface(void *This, REFIID iid, void **out)
     else if (IsEqualGUID(iid, &IID_IDirectDrawSurface3)) v = 3;
     else if (IsEqualGUID(iid, &IID_IDirectDrawSurface4)) v = 4;
     else if (IsEqualGUID(iid, &IID_IDirectDrawSurface7)) v = 7;
-    if (!v) { *out = NULL; return E_NOINTERFACE; }
+    if (!v) return d3d6_query_texture(s, iid, out) == S_OK ? S_OK : (*out = NULL, E_NOINTERFACE);
     s->ref++;
     *out = s_iface(s, v);
     return S_OK;
@@ -566,6 +517,7 @@ static HRESULT WINAPI s_AddAttachedSurface(void *This, void *att)
 {
     Surf *s = SELF(Surf, This), *a = att ? SELF(Surf, att) : NULL;
     if (!a) return DDERR_INVALIDPARAMS;
+    if (a->zbuf) { if (s->zatt) return DDERR_SURFACEALREADYATTACHED; s->zatt = a; a->ref++; return DD_OK; }
     if (!s->back) { s->back = a; a->front = s; a->ref++; }
     return DD_OK;
 }
@@ -585,8 +537,10 @@ static HRESULT WINAPI s_Blt(void *This, RECT *dr, void *srcif, RECT *sr, DWORD f
             mkw_log("Blt の種類: fl=%08lx ddfx=%08lx %dbpp->%dbpp%s%s\n", (unsigned long)fl, (unsigned long)fxf, s ? s->bpp : 0, d->bpp,
                     d->primary ? " (primary)" : "", (sr && dr && ((sr->right - sr->left) != (dr->right - dr->left) || (sr->bottom - sr->top) != (dr->bottom - dr->top))) ? " 拡大縮小" : ""); }
     }
-    if (fl & DDBLT_COLORFILL) return do_fill(d, dr, fx ? fx->dwFillColor : 0);
     if (fl & DDBLT_DEPTHFILL) return DD_OK;
+    d3d6_cpu_access(d); d3d6_cpu_modified(d);
+    if (s) d3d6_cpu_access(s);
+    if (fl & DDBLT_COLORFILL) return do_fill(d, dr, fx ? fx->dwFillColor : 0);
     if (!s) {
         if (fl & DDBLT_ROP && fx && fx->dwROP == BLACKNESS) return do_fill(d, dr, 0);
         return DD_OK;
@@ -609,6 +563,7 @@ static HRESULT WINAPI s_BltFast(void *This, DWORD x, DWORD y, void *srcif, RECT 
     RECT dr, r;
     int keyed = 0; DWORD lo = 0, hi = 0;
     if (!s) return DDERR_INVALIDPARAMS;
+    d3d6_cpu_access(d); d3d6_cpu_modified(d); d3d6_cpu_access(s);
     if (sr) r = *sr; else SetRect(&r, 0, 0, s->w, s->h);
     SetRect(&dr, x, y, x + (r.right - r.left), y + (r.bottom - r.top));
     if ((trans & DDBLTFAST_SRCCOLORKEY) && (s->ckflags & DDCKEY_SRCBLT)) { keyed = 1; lo = s->ck_src.dwColorSpaceLowValue; hi = s->ck_src.dwColorSpaceHighValue; if (hi < lo) hi = lo; }
@@ -617,6 +572,7 @@ static HRESULT WINAPI s_BltFast(void *This, DWORD x, DWORD y, void *srcif, RECT 
 static HRESULT WINAPI s_DeleteAttachedSurface(void *This, DWORD fl, void *att)
 {
     Surf *s = SELF(Surf, This); (void)fl;
+    if (att && s->zatt == SELF(Surf, att)) { Surf *z = s->zatt; s->zatt = NULL; s_Release(&z->i[0]); return DD_OK; }
     if (att && s->back == SELF(Surf, att)) { s->back->front = NULL; s->back->ref--; s->back = NULL; }
     return DD_OK;
 }
@@ -654,6 +610,7 @@ static HRESULT WINAPI s_Flip(void *This, void *target, DWORD fl)
     Surf *s = SELF(Surf, This);
     (void)fl;
     if (!s->primary) return DDERR_NOTFLIPPABLE;
+    if (s->back) d3d6_flip(s, target ? SELF(Surf, target) : s->back);
     if (s->back && !s->virt) {
         Surf *t = target ? SELF(Surf, target) : s->back;
         /* 3重以上のチェーン: 前方へ回転 */
@@ -675,7 +632,10 @@ static HRESULT WINAPI s_GetAttachedSurface(void *This, DDSCAPS *caps, void **out
 {
     Surf *s = SELF(Surf, This);
     int v = ((IFACE *)This)->ver;
-    (void)caps;
+    if (caps && (caps->dwCaps & DDSCAPS_ZBUFFER)) {
+        if (!s->zatt) { *out = NULL; return DDERR_NOTFOUND; }
+        s->zatt->ref++; *out = s_iface(s->zatt, v); return DD_OK;
+    }
     if (!s->back) { *out = NULL; return DDERR_NOTFOUND; }
     s->back->ref++;
     *out = s_iface(s->back, v);
@@ -708,6 +668,7 @@ static HRESULT WINAPI s_GetDC(void *This, HDC *out)
     gdi_sync();
     { static int n; if (g_cfg.log && n < 10) { n++; mkw_log("GetDC %p primary=%d\n", This, SELF(Surf, This)->primary); } }
     Surf *s = SELF(Surf, This);
+    d3d6_cpu_access(s);
     if (s->virt) {
         vwin_t *w = surf_win(s);
         if (!w) return DDERR_GENERIC;
@@ -747,6 +708,7 @@ static HRESULT WINAPI s_ReleaseDC(void *This, HDC dc)
         for (y = 0; y < s->h; y++) memcpy(s->bits + (size_t)y * s->pitch, s->xbits + (size_t)y * row, (size_t)(s->w * s->bpp / 8));
     }
     s->dc_out = 0;
+    d3d6_cpu_modified(s);
     if (s->primary) surf_present(s, 0);
     return DD_OK;
 }
@@ -764,8 +726,15 @@ static void surf_pf(Surf *s, DDPIXELFORMAT *pf)
         DWORD r, g, b; int bpp = display_bpp(s->dd);
         default_masks(bpp, &r, &g, &b);
         fill_pf(pf, bpp == 15 ? 16 : bpp, r, g, b);
-    } else fill_pf(pf, s->bpp, s->rmask, s->gmask, s->bmask);
+    } else if (s->zbuf) {
+        memset(pf, 0, sizeof *pf); pf->dwSize = sizeof *pf; pf->dwFlags = DDPF_ZBUFFER;
+        pf->dwZBufferBitDepth = s->zbuf; pf->dwZBitMask = s->zbuf == 16 ? 0xFFFF : s->zbuf == 24 ? 0xFFFFFF : 0xFFFFFFFF;
+    } else {
+        fill_pf(pf, s->bpp, s->rmask, s->gmask, s->bmask);
+        if (s->amask) { pf->dwFlags |= DDPF_ALPHAPIXELS; pf->dwRGBAlphaBitMask = s->amask; }
+    }
 }
+void mkw_surf_pf(Surf *s, DDPIXELFORMAT *pf) { surf_pf(s, pf); }
 static HRESULT WINAPI s_GetPixelFormat(void *This, DDPIXELFORMAT *pf) { surf_pf(SELF(Surf, This), pf); return DD_OK; }
 
 static void surf_desc2(Surf *s, DDSURFACEDESC2 *d)
@@ -858,6 +827,7 @@ static HRESULT WINAPI s_Lock(void *This, RECT *r, void *desc, DWORD fl, HANDLE e
             }
         }
     } else {
+        d3d6_cpu_access(s);
         GdiFlush();
         base = s->bits; pitch = s->pitch; bypp = s->bpp / 8;
     }
@@ -889,6 +859,7 @@ static HRESULT WINAPI s_Unlock(void *This, void *r)
         }
     }
     s->uniq++;
+    d3d6_cpu_modified(s);
     if (s->primary) surf_present(s, 1);
     return DD_OK;
 }
@@ -909,6 +880,7 @@ static HRESULT WINAPI s_SetColorKey(void *This, DWORD fl, DDCOLORKEY *ck)
     if (which & DDCKEY_SRCBLT) {
         if (ck) { s->ck_src = *ck; if (!(fl & DDCKEY_COLORSPACE)) s->ck_src.dwColorSpaceHighValue = ck->dwColorSpaceLowValue; s->ckflags |= DDCKEY_SRCBLT; }
         else s->ckflags &= ~DDCKEY_SRCBLT;
+        if (!s->be_rt) s->cpu_dirty = 1;   /* テクスチャのキー色が変わった */
     }
     if (which & DDCKEY_DESTBLT) {
         if (ck) { s->ck_dst = *ck; s->ckflags |= DDCKEY_DESTBLT; }
@@ -1058,7 +1030,15 @@ static HRESULT create_surface(DDraw *dd, DDSURFACEDESC2 *d, Surf **out)
             default_masks(bpp, &r, &g, &b);
         }
         if (bpp == 15) bpp = 16;
-        if (caps & (DDSCAPS_ZBUFFER | DDSCAPS_3DDEVICE | DDSCAPS_TEXTURE | DDSCAPS_OVERLAY)) { free(s); return DDERR_INVALIDCAPS; }
+        if (caps & DDSCAPS_OVERLAY) { free(s); return DDERR_INVALIDCAPS; }
+        if (caps & DDSCAPS_ZBUFFER) {
+            int zb = 16;
+            if ((d->dwFlags & DDSD_PIXELFORMAT) && (d->ddpfPixelFormat.dwFlags & DDPF_ZBUFFER)) zb = (int)d->ddpfPixelFormat.dwZBufferBitDepth;
+            else if (d->dwFlags & DDSD_ZBUFFERBITDEPTH) zb = (int)d->dwMipMapCount; /* DDSURFACEDESC の dwZBufferBitDepth と同じ位置 */
+            if (zb != 24 && zb != 32) zb = 16;
+            s->zbuf = zb; bpp = zb == 16 ? 16 : 32; default_masks(bpp, &r, &g, &b);
+        }
+        if ((d->dwFlags & DDSD_PIXELFORMAT) && (d->ddpfPixelFormat.dwFlags & DDPF_ALPHAPIXELS) && !(d->ddpfPixelFormat.dwFlags & DDPF_ZBUFFER)) s->amask = d->ddpfPixelFormat.dwRGBAlphaBitMask;
         if (!surf_alloc(s, w, h, bpp, r, g, b)) { free(s); return DDERR_OUTOFMEMORY; }
         s->caps = (caps ? caps : DDSCAPS_OFFSCREENPLAIN);
         if (!(s->caps & (DDSCAPS_SYSTEMMEMORY | DDSCAPS_VIDEOMEMORY))) s->caps |= DDSCAPS_VIDEOMEMORY | DDSCAPS_LOCALVIDMEM;
@@ -1070,6 +1050,26 @@ static HRESULT create_surface(DDraw *dd, DDSURFACEDESC2 *d, Surf **out)
     return DD_OK;
 }
 
+/* DirectX 6 以外の Direct3D を使うゲームだった場合: MKWrap では描けないので、
+ * INI を「置き換えない」設定にしてゲームを起動し直す (次回からは最初から本物の DirectDraw) */
+static void ddraw_switch_to_native(void)
+{
+    wchar_t m[32], cmd[2048], dir[MAX_PATH];
+    STARTUPINFOW si; PROCESS_INFORMATION pi;
+    GetPrivateProfileStringW(L"Display", L"DirectDraw", L"auto", m, 32, g_ini);
+    if (_wcsicmp(m, L"auto")) return;   /* emulate を明示している場合はそのまま */
+    mkw_log("Direct3D を使うゲームと判断しました。DirectDraw=native にして起動し直します\n");
+    WritePrivateProfileStringW(L"Display", L"DirectDraw", L"native", g_ini);
+    WritePrivateProfileStringW(L"Display", L"DpiAware", L"0", g_ini);
+    wcsncpy(cmd, GetCommandLineW(), 2047); cmd[2047] = 0;
+    GetCurrentDirectoryW(MAX_PATH, dir);
+    memset(&si, 0, sizeof si); si.cb = sizeof si;
+    if (CreateProcessW(NULL, cmd, NULL, NULL, FALSE, 0, NULL, dir, &si, &pi)) {
+        CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+        TerminateProcess(GetCurrentProcess(), 0);
+    }
+}
+
 static HRESULT WINAPI dd_QueryInterface(void *This, REFIID iid, void **out)
 {
     DDraw *d = SELF(DDraw, This);
@@ -1079,7 +1079,20 @@ static HRESULT WINAPI dd_QueryInterface(void *This, REFIID iid, void **out)
     else if (IsEqualGUID(iid, &IID_IDirectDraw2)) v = 2;
     else if (IsEqualGUID(iid, &IID_IDirectDraw4)) v = 4;
     else if (IsEqualGUID(iid, &IID_IDirectDraw7)) v = 7;
-    if (!v) { *out = NULL; mkw_log("IDirectDraw::QueryInterface 未対応 IID\n"); return E_NOINTERFACE; }
+    if (!v) {
+        static const GUID d3d[] = {
+            { 0x3BBA0080, 0x2421, 0x11CF, { 0xA3, 0x1A, 0x00, 0xAA, 0x00, 0xB9, 0x33, 0x56 } },
+            { 0x6AAE1EC1, 0x662A, 0x11D0, { 0x88, 0x9D, 0x00, 0xAA, 0x00, 0xBB, 0xB7, 0x6A } },
+            { 0xBB223240, 0xE72B, 0x11D0, { 0xA9, 0xB4, 0x00, 0xAA, 0x00, 0xC0, 0x99, 0x3E } },
+            { 0xF5049E77, 0x4861, 0x11D2, { 0xA4, 0x07, 0x00, 0xA0, 0xC9, 0x06, 0x29, 0xA8 } },
+        };
+        int k;
+        if (d3d6_query_d3d(d, iid, out) == S_OK) return S_OK;
+        *out = NULL;
+        for (k = 0; k < 4; k++) if (IsEqualGUID(iid, &d3d[k])) { ddraw_switch_to_native(); break; }
+        mkw_log("IDirectDraw::QueryInterface 未対応 IID\n");
+        return E_NOINTERFACE;
+    }
     d->ref++; *out = dd_iface(d, v);
     return S_OK;
 }
@@ -1091,6 +1104,7 @@ static ULONG WINAPI dd_Release(void *This)
     if (r <= 0) {
         if (d->mode_w) mode_change_fake(0, 0, 0);
         if (g_dd == d) g_dd = NULL;
+        d3d6_ddraw_freed(d);
         free(d); return 0;
     }
     return r;
@@ -1172,14 +1186,16 @@ static void fill_caps(DDCAPS *c)
     if (sz < sizeof(DWORD) || sz > sizeof(DDCAPS)) sz = sizeof(DDCAPS);
     memset(c, 0, sz);
     c->dwSize = sz;
-    c->dwCaps = DDCAPS_BLT | DDCAPS_BLTCOLORFILL | DDCAPS_BLTSTRETCH | DDCAPS_COLORKEY | DDCAPS_PALETTE | DDCAPS_CANBLTSYSMEM | DDCAPS_BLTDEPTHFILL;
+    c->dwCaps = DDCAPS_BLT | DDCAPS_BLTCOLORFILL | DDCAPS_BLTSTRETCH | DDCAPS_COLORKEY | DDCAPS_PALETTE | DDCAPS_CANBLTSYSMEM | DDCAPS_BLTDEPTHFILL | DDCAPS_3D | DDCAPS_COLORKEYHWASSIST;
+    c->dwZBufferBitDepths = DDBD_16 | DDBD_24 | DDBD_32;
     c->dwCaps2 = DDCAPS2_WIDESURFACES | DDCAPS2_NOPAGELOCKREQUIRED;
     c->dwCKeyCaps = DDCKEYCAPS_SRCBLT;
     c->dwFXCaps = DDFXCAPS_BLTSTRETCHX | DDFXCAPS_BLTSTRETCHY | DDFXCAPS_BLTMIRRORLEFTRIGHT | DDFXCAPS_BLTMIRRORUPDOWN;
     c->dwPalCaps = DDPCAPS_8BIT | DDPCAPS_PRIMARYSURFACE;
     c->dwVidMemTotal = 64 * 1024 * 1024; c->dwVidMemFree = 60 * 1024 * 1024;
     c->ddsCaps.dwCaps = DDSCAPS_BACKBUFFER | DDSCAPS_COMPLEX | DDSCAPS_FLIP | DDSCAPS_FRONTBUFFER | DDSCAPS_OFFSCREENPLAIN |
-                        DDSCAPS_PALETTE | DDSCAPS_PRIMARYSURFACE | DDSCAPS_SYSTEMMEMORY | DDSCAPS_VIDEOMEMORY | DDSCAPS_VISIBLE | DDSCAPS_LOCALVIDMEM;
+                        DDSCAPS_PALETTE | DDSCAPS_PRIMARYSURFACE | DDSCAPS_SYSTEMMEMORY | DDSCAPS_VIDEOMEMORY | DDSCAPS_VISIBLE | DDSCAPS_LOCALVIDMEM |
+                        DDSCAPS_TEXTURE | DDSCAPS_3DDEVICE | DDSCAPS_ZBUFFER;
 }
 static HRESULT WINAPI dd_GetCaps(void *This, DDCAPS *hal, DDCAPS *hel)
 {
@@ -1363,21 +1379,36 @@ HRESULT WINAPI mk_DirectDrawEnumerateExA(void *cb, void *ctx, DWORD fl)
 }
 
 /* ---- ddraw.dll として置かれた場合のエクスポート ---- */
-HRESULT WINAPI exp_DirectDrawCreate(GUID *g, void **pp, void *o) { return mk_DirectDrawCreate(g, pp, o); }
-HRESULT WINAPI exp_DirectDrawCreateEx(GUID *g, void **pp, REFIID iid, void *o) { return mk_DirectDrawCreateEx(g, pp, iid, o); }
-HRESULT WINAPI exp_DirectDrawEnumerateA(void *cb, void *ctx) { return mk_DirectDrawEnumerateA(cb, ctx); }
-HRESULT WINAPI exp_DirectDrawEnumerateExA(void *cb, void *ctx, DWORD fl) { return mk_DirectDrawEnumerateExA(cb, ctx, fl); }
+/* ddraw.dll として置かれ、DirectDraw を置き換えない設定 (Direct3D を使うゲーム) のときは本物へ転送 */
+static FARPROC sys_ddraw(const char *name)
+{
+    static HMODULE m;
+    if (!m) { wchar_t p[MAX_PATH]; GetSystemDirectoryW(p, MAX_PATH); wcscat(p, L"\\ddraw.dll"); m = LoadLibraryW(p); }
+    return m ? GetProcAddress(m, name) : NULL;
+}
+#define FWD(name, type, ...) do { if (g_cfg.ddraw_native) { __typeof__(type) f = (__typeof__(type))sys_ddraw(name); return f ? f(__VA_ARGS__) : DDERR_GENERIC; } } while (0)
+HRESULT WINAPI exp_DirectDrawCreate(GUID *g, void **pp, void *o)
+{ FWD("DirectDrawCreate", HRESULT (WINAPI *)(GUID *, void **, void *), g, pp, o); return mk_DirectDrawCreate(g, pp, o); }
+HRESULT WINAPI exp_DirectDrawCreateEx(GUID *g, void **pp, REFIID iid, void *o)
+{ FWD("DirectDrawCreateEx", HRESULT (WINAPI *)(GUID *, void **, REFIID, void *), g, pp, iid, o); return mk_DirectDrawCreateEx(g, pp, iid, o); }
+HRESULT WINAPI exp_DirectDrawEnumerateA(void *cb, void *ctx)
+{ FWD("DirectDrawEnumerateA", HRESULT (WINAPI *)(void *, void *), cb, ctx); return mk_DirectDrawEnumerateA(cb, ctx); }
+HRESULT WINAPI exp_DirectDrawEnumerateExA(void *cb, void *ctx, DWORD fl)
+{ FWD("DirectDrawEnumerateExA", HRESULT (WINAPI *)(void *, void *, DWORD), cb, ctx, fl); return mk_DirectDrawEnumerateExA(cb, ctx, fl); }
 HRESULT WINAPI exp_DirectDrawEnumerateW(void *cb, void *ctx)
 {
+    FWD("DirectDrawEnumerateW", HRESULT (WINAPI *)(void *, void *), cb, ctx);
     ((BOOL (WINAPI *)(GUID *, LPWSTR, LPWSTR, LPVOID))cb)(NULL, L"Primary Display Driver", L"display", ctx);
     return DD_OK;
 }
 HRESULT WINAPI exp_DirectDrawEnumerateExW(void *cb, void *ctx, DWORD fl)
 {
+    FWD("DirectDrawEnumerateExW", HRESULT (WINAPI *)(void *, void *, DWORD), cb, ctx, fl);
     (void)fl;
     ((BOOL (WINAPI *)(GUID *, LPWSTR, LPWSTR, LPVOID, HMONITOR))cb)(NULL, L"Primary Display Driver", L"display", ctx, NULL);
     return DD_OK;
 }
-HRESULT WINAPI exp_DirectDrawCreateClipper(DWORD fl, void **out, void *o) { (void)fl; (void)o; *out = &new_clip()->i; return DD_OK; }
+HRESULT WINAPI exp_DirectDrawCreateClipper(DWORD fl, void **out, void *o)
+{ FWD("DirectDrawCreateClipper", HRESULT (WINAPI *)(DWORD, void **, void *), fl, out, o); (void)fl; (void)o; *out = &new_clip()->i; return DD_OK; }
 void WINAPI exp_AcquireDDThreadLock(void) {}
 void WINAPI exp_ReleaseDDThreadLock(void) {}

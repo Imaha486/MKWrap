@@ -41,6 +41,7 @@
 | 熱血高校ドッジボール部 | DodgeBall.exe | InstallShield 6 | なし |
 | ぽっぷんぽっぷ | PopnPop.exe | InstallShield 5 (CD 上の非圧縮ファイル) | 62Hz → 58.97Hz、仮想 CD |
 | ワルキューレの伝説 | WD1500.EXE | InstallShield 3 | フレーム同期を置き換え → 60.606Hz |
+| ロックマン DASH 鋼の冒険心 | rockman.exe | InstallShield 5 + CD のデータフォルダ (Dat / Sph / BGM) | なし (Direct3D 6 を MKWrap が描画) |
 | バブルボブル | bublbobl.exe | InstallShield 3 | 62.5Hz → 59.185Hz |
 | ガンスターヒーローズ (セガゲーム本舗) | GUNSTAR.exe | なし (CD から直接起動、フォルダをコピー) | 垂直同期 60Hz → 59.92Hz |
 

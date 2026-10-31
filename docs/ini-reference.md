@@ -24,7 +24,11 @@
 | Renderer | auto | auto = Direct3D9 (失敗時 GDI)、gdi = GDI のみ |
 | VSync | 0 | 1 = Direct3D9 の表示を垂直同期に合わせる |
 | DpiAware | 1 | 高 DPI 対応として動かす (ぼやけ防止) |
-| VirtualizeWindow | 1 | 0 = 窓の仮想化を行わない (表示補正なし) |
+| Movie | auto | ゲームの動画 (MCI の AVI)。auto = この PC で映像を再生できない形式 (Indeo など) なら飛ばす / play = そのまま再生 / skip = 常に飛ばす |
+| BackgroundInput | 0 | (Input) 1 = ゲームが前面に無いときもキー・パッドの入力を渡す。0 では前面に無いとき何も押していない状態を返す |
+| KeepActive | 0 | 1 = 他のアプリに切り替えても、ゲームに非アクティブを伝えない (非アクティブで止まるゲームを止めない) |
+| DirectDraw | auto | auto = MKWrap の DirectDraw を使う (DirectX 6 の Direct3D も描画)。それ以外の Direct3D を求められたら native に書き換えて起動し直す / emulate = 常に MKWrap / native = 置き換えない (本物か、同じフォルダの dgVoodoo2 などの ddraw.dll) |
+| VirtualizeWindow | 1 (native では 0) | 0 = 窓の仮想化を行わない (表示補正なし) |
 | DialogDpiUnaware | 1 | ゲームのダイアログを DPI 非対応として作る (高 DPI 環境では Windows が拡大表示)。0 = ゲーム窓と同じ |
 
 ## [Timing]
@@ -32,6 +36,7 @@
 | キー | 既定 | 内容 |
 |---|---|---|
 | GameHz / TargetHz | - | ゲーム本来の周期と合わせたい周期。両方指定すると時計の進みを TargetHz/GameHz 倍にする |
+| TickBase | 600000 | (Timing) GetTickCount / timeGetTime の起動時の値 (ミリ秒)。`uptime` = 実際の Windows の起動からの時間。起動から長時間たった PC で、時刻を float で扱うゲームが止まるのを防ぐ |
 | TimeScale | 1 | 時計の倍率を直接指定 (GameHz/TargetHz が優先) |
 | PreciseTimer | 1 | GetTickCount / timeGetTime を QueryPerformanceCounter ベースの 1ms 精度にする |
 | RefreshRate | 0 | 画面転送の上限 (Hz)。0 = 制限しない。DirectDraw の垂直同期待ちの周期にも使う (0 なら 60) |

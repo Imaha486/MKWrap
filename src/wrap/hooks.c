@@ -1,5 +1,6 @@
 #include "mkw.h"
 #include <string.h>
+#include <ddraw.h>
 
 /* フック表: 実行ファイルが GetProcAddress で後から関数を求めた場合 (UPX 等で圧縮された実行ファイル) にも使う */
 #define MAXHOOKS 160
@@ -122,7 +123,7 @@ static int is_module_named(HMODULE m, const wchar_t *name)
 void *mkw_get_proc_override(HMODULE mod, const char *name)
 {
     if ((ULONG_PTR)name < 0x10000) return NULL;
-    if (is_module_named(mod, L"ddraw.dll")) {
+    if (!g_cfg.ddraw_native && is_module_named(mod, L"ddraw.dll")) {
         if (!strcmp(name, "DirectDrawCreate")) return (void *)mk_DirectDrawCreate;
         if (!strcmp(name, "DirectDrawCreateEx")) return (void *)mk_DirectDrawCreateEx;
         if (!strcmp(name, "DirectDrawEnumerateA")) return (void *)mk_DirectDrawEnumerateA;
@@ -159,15 +160,112 @@ static int WINAPI hk_MessageBoxA(HWND h, LPCSTR t, LPCSTR c, UINT f)
     return r_MessageBoxA(h, t, c, f);
 }
 
+/* ---------------- 本物の DirectDraw を使う場合 (DirectDraw=native) の調査と補正 ----------------
+ * SetCooperativeLevel / SetDisplayMode の結果を記録し、全画面の設定に失敗したら窓を前面に出してやり直す */
+typedef HRESULT (WINAPI *DDCreate_t)(GUID *, void **, void *);
+typedef HRESULT (WINAPI *QI_t)(void *, REFIID, void **);
+typedef HRESULT (WINAPI *SetCoop_t)(void *, HWND, DWORD);
+typedef HRESULT (WINAPI *SetMode_t)(void *, DWORD, DWORD, DWORD, DWORD, DWORD);
+static DDCreate_t r_DirectDrawCreate;
+#define NVT 6
+static struct { void **vt; QI_t qi; SetCoop_t sc; SetMode_t sm; int ver; } g_nvt[NVT];
+static int nvt_find(void *o) { int i; void **vt = *(void ***)o; for (i = 0; i < NVT; i++) if (g_nvt[i].vt == vt) return i; return -1; }
+static void native_wrap(void *o, int ver);
+
+static void log_hwnd(HWND h)
+{
+    DWORD pid = 0, tid = h ? GetWindowThreadProcessId(h, &pid) : 0; RECT r = { 0, 0, 0, 0 };
+    if (h) GetWindowRect(h, &r);
+    mkw_log("  hwnd=%p IsWindow=%d 表示=%d 最小化=%d 前面=%d style=%08lx ex=%08lx 親=%p 作成スレッド=%lu 呼出スレッド=%lu 位置=%ld,%ld-%ld,%ld\n",
+            (void *)h, h ? IsWindow(h) : 0, h ? IsWindowVisible(h) : 0, h ? IsIconic(h) : 0, GetForegroundWindow() == h,
+            h ? (unsigned long)GetWindowLongA(h, GWL_STYLE) : 0, h ? (unsigned long)GetWindowLongA(h, GWL_EXSTYLE) : 0,
+            h ? (void *)GetParent(h) : NULL, (unsigned long)tid, (unsigned long)GetCurrentThreadId(), r.left, r.top, r.right, r.bottom);
+}
+static HRESULT WINAPI n_SetCooperativeLevel(void *This, HWND h, DWORD fl)
+{
+    int i = nvt_find(This);
+    HRESULT hr = g_nvt[i].sc(This, h, fl);
+    mkw_log("[本物の DirectDraw%d] SetCooperativeLevel(%p, %lx) = %08lx\n", g_nvt[i].ver, (void *)h, (unsigned long)fl, (unsigned long)hr);
+    if (FAILED(hr) && (fl & DDSCL_FULLSCREEN)) {
+        log_hwnd(h);
+        /* 窓が表示されていない・前面にない場合に失敗することがあるので、前面に出してやり直す */
+        if (h && IsWindow(h)) {
+            ShowWindow(h, SW_SHOWNORMAL); SetForegroundWindow(h); SetActiveWindow(h); SetFocus(h);
+            hr = g_nvt[i].sc(This, h, fl);
+            mkw_log("  窓を前面に出して再試行 = %08lx\n", (unsigned long)hr);
+        }
+        if (FAILED(hr) && (fl & (DDSCL_FPUSETUP | DDSCL_FPUPRESERVE | DDSCL_ALLOWREBOOT | DDSCL_ALLOWMODEX))) {
+            hr = g_nvt[i].sc(This, h, fl & ~(DDSCL_FPUSETUP | DDSCL_FPUPRESERVE | DDSCL_ALLOWREBOOT | DDSCL_ALLOWMODEX));
+            mkw_log("  付加フラグを外して再試行 = %08lx\n", (unsigned long)hr);
+        }
+    }
+    return hr;
+}
+/* IDirectDraw (1) の SetDisplayMode は引数が 3 つ、2 以降は 5 つ (stdcall なので別の関数にする) */
+static HRESULT WINAPI n_SetDisplayMode1(void *This, DWORD w, DWORD h, DWORD bpp)
+{
+    int i = nvt_find(This);
+    HRESULT hr = ((HRESULT (WINAPI *)(void *, DWORD, DWORD, DWORD))g_nvt[i].sm)(This, w, h, bpp);
+    mkw_log("[本物の DirectDraw1] SetDisplayMode(%lu x %lu x %lu) = %08lx\n", (unsigned long)w, (unsigned long)h, (unsigned long)bpp, (unsigned long)hr);
+    return hr;
+}
+static HRESULT WINAPI n_SetDisplayMode(void *This, DWORD w, DWORD h, DWORD bpp, DWORD rate, DWORD fl)
+{
+    int i = nvt_find(This);
+    HRESULT hr = g_nvt[i].sm(This, w, h, bpp, rate, fl);
+    mkw_log("[本物の DirectDraw%d] SetDisplayMode(%lu x %lu x %lu) = %08lx\n", g_nvt[i].ver, (unsigned long)w, (unsigned long)h, (unsigned long)bpp, (unsigned long)hr);
+    return hr;
+}
+static HRESULT WINAPI n_QueryInterface(void *This, REFIID iid, void **out)
+{
+    int i = nvt_find(This);
+    HRESULT hr = g_nvt[i].qi(This, iid, out);
+    if (SUCCEEDED(hr) && out && *out) {
+        if (IsEqualGUID(iid, &IID_IDirectDraw2)) native_wrap(*out, 2);
+        else if (IsEqualGUID(iid, &IID_IDirectDraw4)) native_wrap(*out, 4);
+        else if (IsEqualGUID(iid, &IID_IDirectDraw7)) native_wrap(*out, 7);
+    }
+    return hr;
+}
+static void native_wrap(void *o, int ver)
+{
+    void **vt = *(void ***)o; int i; DWORD old;
+    for (i = 0; i < NVT; i++) if (g_nvt[i].vt == vt) return;
+    for (i = 0; i < NVT && g_nvt[i].vt; i++) {}
+    if (i == NVT) return;
+    g_nvt[i].vt = vt; g_nvt[i].ver = ver;
+    g_nvt[i].qi = (QI_t)vt[0]; g_nvt[i].sc = (SetCoop_t)vt[20]; g_nvt[i].sm = (SetMode_t)vt[21];
+    if (VirtualProtect(vt, 22 * sizeof(void *), PAGE_EXECUTE_READWRITE, &old)) {
+        vt[0] = (void *)n_QueryInterface; vt[20] = (void *)n_SetCooperativeLevel; vt[21] = ver == 1 ? (void *)n_SetDisplayMode1 : (void *)n_SetDisplayMode;
+        VirtualProtect(vt, 22 * sizeof(void *), old, &old);
+    }
+}
+static HRESULT WINAPI n_DirectDrawCreate(GUID *g, void **pp, void *o)
+{
+    HRESULT hr = r_DirectDrawCreate(g, pp, o);
+    char path[MAX_PATH] = ""; HMODULE m = NULL;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)r_DirectDrawCreate, &m);
+    if (m) GetModuleFileNameA(m, path, MAX_PATH);
+    mkw_log("DirectDrawCreate (本物: %s) = %08lx\n", path, (unsigned long)hr);
+    if (SUCCEEDED(hr) && pp && *pp) native_wrap(*pp, 1);
+    return hr;
+}
+
 void hooks_install(void)
 {
     real_GetProcAddress = (GetProcAddress_t)GetProcAddress(GetModuleHandleA("kernel32.dll"), "GetProcAddress");
     iat_hook(g_exe, "kernel32.dll", "GetProcAddress", (void *)hk_GetProcAddress);
 
-    iat_hook(g_exe, "ddraw.dll", "DirectDrawCreate", (void *)mk_DirectDrawCreate);
-    iat_hook(g_exe, "ddraw.dll", "DirectDrawCreateEx", (void *)mk_DirectDrawCreateEx);
-    iat_hook(g_exe, "ddraw.dll", "DirectDrawEnumerateA", (void *)mk_DirectDrawEnumerateA);
-    iat_hook(g_exe, "ddraw.dll", "DirectDrawEnumerateExA", (void *)mk_DirectDrawEnumerateExA);
+    if (!g_cfg.ddraw_native) {
+        iat_hook(g_exe, "ddraw.dll", "DirectDrawCreate", (void *)mk_DirectDrawCreate);
+        iat_hook(g_exe, "ddraw.dll", "DirectDrawCreateEx", (void *)mk_DirectDrawCreateEx);
+        iat_hook(g_exe, "ddraw.dll", "DirectDrawEnumerateA", (void *)mk_DirectDrawEnumerateA);
+        iat_hook(g_exe, "ddraw.dll", "DirectDrawEnumerateExA", (void *)mk_DirectDrawEnumerateExA);
+    } else {
+        mkw_log("DirectDraw は置き換えません (本物 / 同じフォルダの ddraw.dll を使用)\n");
+        r_DirectDrawCreate = (DDCreate_t)iat_hook(g_exe, "ddraw.dll", "DirectDrawCreate", (void *)n_DirectDrawCreate);
+        if (!r_DirectDrawCreate) r_DirectDrawCreate = (DDCreate_t)GetProcAddress(LoadLibraryA("ddraw.dll"), "DirectDrawCreate");
+    }
 
     if (g_cfg.log) {
         r_MessageBoxA = (void *)GetProcAddress(LoadLibraryA("user32.dll"), "MessageBoxA");

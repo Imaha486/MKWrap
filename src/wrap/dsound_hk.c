@@ -57,6 +57,7 @@ static HRESULT WINAPI hk_DirectSoundCreate(const GUID *g, void **out, void *oute
     HRESULT hr = r_DirectSoundCreate(g, out, outer);
     if (SUCCEEDED(hr) && out && *out) patch_vtbl(*out, 3, (void *)hk_CreateSoundBuffer, (void **)&r_CreateSoundBuffer);
     mkw_log("DirectSoundCreate = %08lx\n", hr);
+    mkw_fix_cwd("DirectSoundCreate の後");
     return hr;
 }
 

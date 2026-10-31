@@ -233,6 +233,155 @@ static void dest_rect(vwin_t *w, RECT *cl, RECT *d)
     d->left = (W - dw) / 2; d->top = (H - dh) / 2; d->right = d->left + dw; d->bottom = d->top + dh;
 }
 
+
+/* ---------------- 動画 (MCI) ----------------
+ * 「window <alias> handle <ゲームの窓>」「put <alias> destination at x y w h」で窓に直接描く動画は、
+ * ゲームから見た座標 (論理サイズ) のままだと拡大された窓の左上に小さく出るので、実際の表示位置に直す */
+typedef DWORD (WINAPI *mciSendStringA_t)(LPCSTR, LPSTR, UINT, HWND);
+static mciSendStringA_t r_mciSendStringA;
+static char g_mci_alias[64];
+static RECT g_mci_dest;        /* ゲームが指定した位置 (論理座標) */
+static int g_mci_has_dest;
+static volatile int g_movie;   /* 動画を再生中 (キャンバスで上書きしない) */
+
+static void map_logical(vwin_t *w, const RECT *in, RECT *out)
+{
+    RECT cl, d; int lw = w->lw > 0 ? w->lw : 640, lh = w->lh > 0 ? w->lh : 480;
+    r_GetClientRect(w->hwnd, &cl);
+    {   /* dest_rect と同じ考え方で論理サイズ全体の表示位置を求める */
+        int W = cl.right, H = cl.bottom, dw, dh;
+        double ar = g_cfg.aspect > 0 ? g_cfg.aspect : (double)lw / lh;
+        if (!w->fullscreen && !g_cfg.keep_aspect) d = cl;
+        else {
+            dw = W; dh = (int)(W / ar + 0.5);
+            if (dh > H) { dh = H; dw = (int)(H * ar + 0.5); }
+            d.left = (W - dw) / 2; d.top = (H - dh) / 2; d.right = d.left + dw; d.bottom = d.top + dh;
+        }
+    }
+    out->left = d.left + (int)((long long)in->left * (d.right - d.left) / lw);
+    out->top = d.top + (int)((long long)in->top * (d.bottom - d.top) / lh);
+    out->right = d.left + (int)((long long)in->right * (d.right - d.left) / lw);
+    out->bottom = d.top + (int)((long long)in->bottom * (d.bottom - d.top) / lh);
+}
+static void mci_apply_dest(void)
+{
+    vwin_t *w = g_main; RECT r; char cmd[160];
+    if (!w || !g_mci_has_dest || !g_mci_alias[0] || !r_mciSendStringA) return;
+    map_logical(w, &g_mci_dest, &r);
+    wsprintfA(cmd, "put %s destination at %d %d %d %d", g_mci_alias, (int)r.left, (int)r.top, (int)(r.right - r.left), (int)(r.bottom - r.top));
+    r_mciSendStringA(cmd, NULL, 0, NULL);
+    { RECT cl; r_GetClientRect(w->hwnd, &cl); mkw_log("動画の表示位置: %s (窓 %ldx%ld 論理 %dx%d)\n", cmd, cl.right, cl.bottom, w->lw, w->lh); }
+}
+/* 動画の映像の形式 (AVI の最初の映像ストリームの圧縮形式) を調べ、この PC で伸長できるか確かめる */
+typedef HANDLE (WINAPI *ICOpen_t)(DWORD, DWORD, UINT);
+typedef LRESULT (WINAPI *ICClose_t)(HANDLE);
+static int avi_video_fourcc(const char *path, DWORD *handler, DWORD *comp)
+{
+    HANDLE f = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    BYTE buf[65536]; DWORD n = 0, i;
+    *handler = *comp = 0;
+    if (f == INVALID_HANDLE_VALUE) return 0;
+    ReadFile(f, buf, sizeof buf, &n, NULL);
+    CloseHandle(f);
+    for (i = 0; i + 64 < n; i++) {
+        if (!memcmp(buf + i, "strh", 4) && !memcmp(buf + i + 8, "vids", 4)) {
+            DWORD j;
+            memcpy(handler, buf + i + 12, 4);
+            for (j = i + 8; j + 40 < n; j++) if (!memcmp(buf + j, "strf", 4)) { memcpy(comp, buf + j + 8 + 16, 4); break; }
+            return 1;
+        }
+    }
+    return 0;
+}
+#define FCC4(a, b, c, d) ((DWORD)(BYTE)(a) | ((DWORD)(BYTE)(b) << 8) | ((DWORD)(BYTE)(c) << 16) | ((DWORD)(BYTE)(d) << 24))
+static int fourcc_ok(DWORD fcc)
+{
+    static ICOpen_t pOpen; static ICClose_t pClose; static int init;
+    HANDLE h; char s[4]; int i;
+    if (fcc == 0 || fcc == 3 /* BI_BITFIELDS */ || fcc == FCC4('D', 'I', 'B', ' ') || fcc == FCC4('R', 'G', 'B', ' ')) return 1;
+    if (!init) {
+        HMODULE m = LoadLibraryA("msvfw32.dll"); init = 1;
+        if (m) { pOpen = (ICOpen_t)GetProcAddress(m, "ICOpen"); pClose = (ICClose_t)GetProcAddress(m, "ICClose"); }
+    }
+    if (!pOpen) return 1;   /* 調べられない場合は再生してみる */
+    h = pOpen(FCC4('v', 'i', 'd', 'c'), fcc, 2 /* ICMODE_DECOMPRESS */);
+    if (!h) {   /* 小文字でも試す */
+        memcpy(s, &fcc, 4); for (i = 0; i < 4; i++) if (s[i] >= 'A' && s[i] <= 'Z') s[i] += 32;
+        h = pOpen(FCC4('v', 'i', 'd', 'c'), *(DWORD *)s, 2);
+    }
+    if (h) { pClose(h); return 1; }
+    return 0;
+}
+static char g_fake_alias[64];   /* 再生を飛ばしている動画の別名 */
+
+static DWORD WINAPI hk_mciSendStringA(LPCSTR cmd, LPSTR ret, UINT n, HWND cb)
+{
+    char verb[16], alias[64], what[32]; int a, b, c, d, k;
+    DWORD rc;
+    if (!cmd) return r_mciSendStringA(cmd, ret, n, cb);
+    if (g_cfg.log) mkw_log("mciSendString: %s\n", cmd);
+    verb[0] = alias[0] = what[0] = 0;
+    k = sscanf(cmd, "%15s %63s %31s", verb, alias, what);
+    /* 動画を開く: 映像を伸長できない (Indeo など Windows 10/11 に無い形式) 場合は再生したことにして飛ばす */
+    if (k >= 2 && !_stricmp(verb, "open") && g_cfg.movie != 1) {
+        const char *p = cmd + 4, *bang, *al;
+        char path[MAX_PATH], als[64]; DWORD hd, cp; int skip = 0;
+        while (*p == ' ') p++;
+        bang = strchr(p, '!');
+        path[0] = als[0] = 0;
+        if (bang && !_strnicmp(p, "avivideo!", 9)) {
+            const char *e = bang + 1; int len;
+            al = strstr(e, " alias ");
+            len = al ? (int)(al - e) : (int)strlen(e);
+            if (len > 0 && len < MAX_PATH) { memcpy(path, e, len); path[len] = 0; }
+            if (al) sscanf(al + 7, "%63s", als);
+            else lstrcpynA(als, path, sizeof als);
+        }
+        if (path[0] == '"') { memmove(path, path + 1, strlen(path)); if (path[0] && path[strlen(path) - 1] == '"') path[strlen(path) - 1] = 0; }
+        if (path[0]) {
+            if (g_cfg.movie == 2) skip = 1;
+            else if (avi_video_fourcc(path, &hd, &cp) && !fourcc_ok(hd) && !fourcc_ok(cp)) {
+                char f1[5] = { 0 }, f2[5] = { 0 }; memcpy(f1, &hd, 4); memcpy(f2, &cp, 4);
+                mkw_log("動画 %s の映像形式 (%s / %s) を再生できる部品がこの PC にないため、動画を飛ばします\n", path, f1, f2);
+                skip = 1;
+            }
+        }
+        if (skip) {
+            lstrcpynA(g_fake_alias, als, sizeof g_fake_alias);
+            if (ret && n) ret[0] = 0;
+            if (g_cfg.movie == 2) mkw_log("動画 %s を飛ばします (Movie=skip)\n", path);
+            return 0;
+        }
+    }
+    if (g_fake_alias[0] && k >= 2 && !_stricmp(alias, g_fake_alias)) {
+        if (ret && n) ret[0] = 0;
+        if (!_stricmp(verb, "play") && strstr(cmd, "notify")) {
+            HWND h = cb ? cb : (g_main ? g_main->hwnd : NULL);
+            if (h) PostMessageA(h, 0x3B9 /* MM_MCINOTIFY */, 1 /* MCI_NOTIFY_SUCCESSFUL */, 1);
+        }
+        if (!_stricmp(verb, "status") && n && ret) lstrcpynA(ret, "stopped", n);
+        if (!_stricmp(verb, "close")) g_fake_alias[0] = 0;
+        return 0;
+    }
+    if (k >= 3 && !_stricmp(verb, "put") && !_stricmp(what, "destination") && g_main && g_main->hwnd &&
+        sscanf(cmd, "%*s %*s %*s at %d %d %d %d", &a, &b, &c, &d) == 4) {
+        lstrcpynA(g_mci_alias, alias, sizeof g_mci_alias);
+        SetRect(&g_mci_dest, a, b, a + c, b + d); g_mci_has_dest = 1;
+        rc = r_mciSendStringA(cmd, ret, n, cb);
+        mci_apply_dest();
+        return rc;
+    }
+    if (k >= 2 && !_stricmp(verb, "play")) {
+        if (g_main && g_main->hwnd) {   /* 動画の周りを黒にしておく */
+            HDC dc = r_GetDC(g_main->hwnd); RECT cl;
+            if (dc) { r_GetClientRect(g_main->hwnd, &cl); FillRect(dc, &cl, (HBRUSH)GetStockObject(BLACK_BRUSH)); r_ReleaseDC(g_main->hwnd, dc); }
+        }
+        g_movie = 1;
+    }
+    if (k >= 2 && (!_stricmp(verb, "stop") || !_stricmp(verb, "close"))) { g_movie = 0; g_mci_has_dest = 0; }
+    return r_mciSendStringA(cmd, ret, n, cb);
+}
+
 static void vwin_present_now(vwin_t *w);
 void vwin_present(vwin_t *w, int frame)
 {
@@ -333,6 +482,7 @@ static void vwin_present_now2(vwin_t *w)
     HDC dc; RECT cl, d; HBRUSH bk;
     if (!w || !w->cdc) return;
     if (IsIconic(w->hwnd)) { w->dirty = 0; return; }
+    if (g_movie && w == g_main) { w->dirty = 0; return; }   /* 動画の再生中 */
     {   /* モニタの2倍を超える頻度の転送は間引く (後でタイマーが表示) */
         static double last, minint;
         double now = mkw_now();
@@ -462,6 +612,10 @@ static LRESULT CALLBACK vwin_proc(HWND h, UINT m, WPARAM wp, LPARAM lp)
     LRESULT r;
     if (!w) return DefWindowProcA(h, m, wp, lp);
     switch (m) {
+    case WM_ACTIVATEAPP:
+        mkw_log("WM_ACTIVATEAPP %d (相手のスレッド %lu)%s\n", (int)wp, (unsigned long)lp, (!wp && g_cfg.keep_active) ? " → ゲームには伝えない" : "");
+        if (!wp && g_cfg.keep_active) return 0;
+        break;
     case WM_SYSKEYDOWN:
         if (wp == (WPARAM)g_cfg.fs_key_vk && (lp & (1 << 29))) {
             if (!(lp & (1 << 30))) vwin_toggle_fullscreen(w);
@@ -510,6 +664,11 @@ static LRESULT CALLBACK vwin_proc(HWND h, UINT m, WPARAM wp, LPARAM lp)
         if (wp != SIZE_MINIMIZED) {
             lp = MAKELPARAM(w->lw, w->lh);
             r_InvalidateRect(h, NULL, FALSE);
+            if (g_movie && w == g_main) {
+                HDC dc = r_GetDC(h); RECT cl;
+                if (dc) { r_GetClientRect(h, &cl); FillRect(dc, &cl, (HBRUSH)GetStockObject(BLACK_BRUSH)); r_ReleaseDC(h, dc); }
+                mci_apply_dest();
+            }
         }
         break;
     case WM_ERASEBKGND:
@@ -876,7 +1035,11 @@ void mode_change_fake2(int w, int h, int bpp, HWND hwnd)
     if (w > 0 && h > 0) {
         g_fake_mode_w = w; g_fake_mode_h = h; g_fake_mode_bpp = bpp;
         mkw_log("画面モード変更(仮想) %dx%d %dbpp\n", w, h, bpp);
-        if (v && (v != g_main || hwnd)) { v->lw = w; v->lh = h; }  /* DirectDraw 排他モードの窓は画面モードの大きさとみなす */
+        if (v && (v != g_main || hwnd) && (v->lw != w || v->lh != h)) {
+            /* DirectDraw 排他モードの窓は画面モードの大きさとみなし、実際の窓もその倍率の大きさにする */
+            v->lw = w; v->lh = h;
+            if (!v->fullscreen && !v->user_sizing) { apply_real_size(v, 0, 0, 0, TRUE); mkw_log("論理サイズ変更 %dx%d (画面モード)\n", w, h); }
+        }
         if (v && !v->fullscreen) {
             if (g_cfg.mode_fullscreen || (g_cfg.fullscreen && v == g_main)) { vwin_set_fullscreen(v, 1); g_mode_fs = 1; g_mode_win = v; }
             else if (!(r_GetWindowLongA(v->hwnd, GWL_STYLE) & WS_CAPTION) && g_cfg.frame_popup) {
@@ -1110,6 +1273,8 @@ void win_hooks_install(void)
     H("gdi32.dll", SetDIBitsToDevice);
     H("gdi32.dll", BitBlt);
     H("gdi32.dll", StretchBlt);
+    r_mciSendStringA = (mciSendStringA_t)GP("winmm.dll", "mciSendStringA");
+    if (r_mciSendStringA) H("winmm.dll", mciSendStringA);
 #undef H
 }
 

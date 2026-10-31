@@ -19,6 +19,19 @@ typedef struct {
     L"LStickUp=" u L"\r\nLStickDown=" d L"\r\nLStickLeft=" l L"\r\nLStickRight=" r L"\r\n"
 #define STD_DIR DIR_KEYS(L"UP", L"DOWN", L"LEFT", L"RIGHT")
 #define STD_SYS L"Back=F2\r\nStart=F3\r\nRB=F4\r\n"
+#define D3D_DISPLAY \
+    L"; Direct3D を使うゲームです。DirectX 6 世代 (IDirect3D3) は MKWrap が Direct3D 9 で描き、窓の拡大・擬似フルスクリーンが使えます。\r\n" \
+    L"; それより古い/新しい Direct3D の場合は、自動で本物の DirectDraw に切り替えて起動し直します (窓の拡大は使えません)。\r\n" \
+    L"; 表示がおかしい場合は DirectDraw=native にしてください\r\n" \
+    L"ModeChangeFullscreen=1\r\n"
+/* DirectX 6 の Direct3D (MKWrap が描く) */
+#define D3D6_DISPLAY \
+    L"; Direct3D (DirectX 6) の 3D 描画も MKWrap が Direct3D 9 で行います。窓の拡大・擬似フルスクリーン (Alt+Enter) が使えます。\r\n" \
+    L"; 表示がおかしい場合は DirectDraw=native にすると本物の DirectDraw に任せます (窓の拡大は使えなくなります)\r\n" \
+    L"; ゲームが全画面に切り替えても、Fullscreen の設定どおり (0 = 窓) に表示します\r\n" \
+    L"ModeChangeFullscreen=0\r\n" \
+    L"; ゲームは非アクティブになると止まる作りで、起動直後に止まったままになることがあるため、非アクティブを伝えない\r\n" \
+    L"KeepActive=1\r\n"
 
 /* セガゲーム本舗 (メディアカイト / 2004 年、Gens 系のメガドライブエミュレータ) */
 #define SEGA_TIMING \
@@ -121,6 +134,21 @@ static const mk_profile_t g_profiles[] = {
       STD_DIR L"A=O\r\nB=P\r\nX=P\r\nY=O\r\n" STD_SYS,
       L"FrameSync=4155f3,framewait,415614,expect=FF 15 E0 E2 43 00\r\n",
       L"", NULL, NULL },
+    { L"rockman.exe", L"ロックマン DASH 鋼の冒険心",
+      L"; 速度はゲーム自身が調整するため補正なし\r\n",
+      L"; ゲームはパッドを DirectInput で直接読みますが、ボタン番号が当時の PS 風パッド向けで、Xbox のパッドでは\r\n"
+      L"; RB=R2 / Back=L1 / Start=R1 / 左スティック押し込み=START のようにずれ、十字キーも効きません。\r\n"
+      L"; そのためパッドはゲームに見せず、ゲームの初期設定のキーに割り当てます (PS 版の説明書の配置を Xbox の配置に合わせたもの)。\r\n"
+      L";   キーの初期設定: 移動=カーソル △=Z ×=X(Space) □=C ○=V L1=Delete L2=Insert R1=PageDown R2=PageUp START=Enter SELECT=右Shift\r\n"
+      L";   十字キー/左スティック=移動  A=×(ジャンプ/キャンセル)  B=○(調べる/決定)  X=□(バスター)  Y=△(特殊武器)\r\n"
+      L";   LB=L1 / RB=R1 (左右に向きを変える)  RT=R2 (ロックオン)  LT=L2 (未使用)  Start=START (メニュー)  Back=SELECT (マップ)\r\n"
+      L"HideJoysticks=1\r\n"
+      DIR_KEYS(L"UP", L"DOWN", L"LEFT", L"RIGHT")
+      L"A=X\r\nB=V\r\nX=C\r\nY=Z\r\nLB=DELETE\r\nRB=PGDN\r\nRT=PGUP\r\nLT=INSERT\r\nStart=ENTER\r\nBack=RSHIFT\r\n",
+      L"", L"",
+      L"; オープニングムービー (CAPCOM.AVI) は Indeo 5 形式で、Windows 10/11 には再生用の部品がないため、MKWrap が自動で飛ばします (Movie=auto)。\r\n"
+      L"; 映像の形式を変換した CAPCOM.AVI に差し替えた場合や、コーデックを入れた場合は再生されます (表示位置は窓の拡大に合わせて直します)\r\n",
+      NULL, D3D6_DISPLAY },
     { L"bublbobl.exe", L"バブルボブル",
       L"; 元は 16ms 間隔 (62.5Hz) で動くため、時計を遅らせてアーケード (タイトー) の 59.185Hz に合わせます\r\n"
       L"GameHz=62.5\r\nTargetHz=59.185\r\n",
@@ -134,6 +162,18 @@ static const mk_profile_t g_profiles[] = {
 
 static const mk_profile_t g_sega_profile = {
     L"", L"セガゲーム本舗 (メガドライブ)", SEGA_TIMING, SEGA_INPUT, L"", L"", SEGA_NOTE, NULL, SEGA_DISPLAY
+};
+
+/* Direct3D を使う未登録のゲーム: DirectX 6 なら MKWrap が描き、それ以外は実行時に本物の DirectDraw に切り替える */
+static const mk_profile_t g_d3d_profile = {
+    L"", L"(未登録のタイトル / Direct3D)",
+    L"; 速度がおかしい場合は GameHz / TargetHz を設定してください\r\n",
+    L"; 未登録のタイトルです。ゲーム中に Ctrl+F12 (またはパッドの LB+RB+Back 長押し) で割り当てを覚えさせてください\r\n"
+    L"LearnHint=1\r\n"
+    STD_DIR L"A=Z\r\nB=X\r\nX=C\r\nY=V\r\n" STD_SYS,
+    L"", L"",
+    L"; Direct3D を使うタイトルです。MKWrap は表示を置き換えず、入力・速度・レジストリなどを補正します。\r\n",
+    NULL, D3D_DISPLAY
 };
 
 static const mk_profile_t g_generic_profile = {

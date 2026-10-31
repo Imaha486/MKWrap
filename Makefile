@@ -28,7 +28,7 @@ all: $(BUILD)/dinput.dll $(BUILD)/MKSetup.exe
 $(BUILD):
 	mkdir -p $(BUILD)
 
-$(BUILD)/dinput.dll: $(WRAP_SRC) src/wrap/mkw.h src/wrap/exports.def | $(BUILD)
+$(BUILD)/dinput.dll: $(WRAP_SRC) src/wrap/mkw.h src/wrap/ddraw_int.h src/wrap/d3d6_be.h src/wrap/exports.def | $(BUILD)
 	$(CC) $(WRAP_CFLAGS) -shared -o $@ $(WRAP_SRC) src/wrap/exports.def $(WRAP_LIBS) -Wl,--enable-stdcall-fixup -s
 
 $(BUILD)/mksetup_res.o: src/setup/mksetup.rc src/setup/app.manifest $(BUILD)/dinput.dll
