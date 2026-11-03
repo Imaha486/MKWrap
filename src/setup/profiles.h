@@ -156,6 +156,39 @@ static const mk_profile_t g_profiles[] = {
       DIR_KEYS(L"", L"", L"X", L"C")
       L"A=Z\r\nB=A\r\nX=A\r\nY=Z\r\nBack=F2\r\nStart=F3\r\nRB=HOME\r\n",
       L"", L"", NULL, NULL },
+    { L"ppjdd.exe", L"バーチャコップ (Windows 版)",
+      L"; 速度はゲーム自身が timeGetTime で調整するため補正なし\r\n",
+      L"; 操作方法はゲームの F5 (Device Settings) で選びます。初期設定はマウス (照準=マウス、撃つ=左ボタン、リロード=右ボタンを素早く 2 回)。\r\n"
+      L"; 窓表示でもマウスは窓の中で使えます (ゲームが前面にある間はカーソルが窓の中に留まります。Alt+Tab で他の窓へ)。\r\n"
+      L"; パッドは 2 通りで使えます:\r\n"
+      L";   (1) F5 で GamePad を選ぶ → ゲームがパッドを直接読みます (方向=照準、ボタン 1=撃つ、ボタン 2 を素早く 2 回=リロード)\r\n"
+      L";   (2) F5 で KeyBoard を選ぶ → 下の割り当てでキーボード (1P) として操作します\r\n"
+      L";       左スティック/十字キー=照準 (WASD)  A/RT=撃つ (V)  B=リロード (H、素早く 2 回)  X/RB=照準の加速 (G)  Start=スタート (Space)  Back=ポーズ (F3)\r\n"
+      L"; マウスの速さ: ゲームは移動量を横 1/3・縦 1/2.25 にして照準を動かすため、元のままだと画面の端から端まで\r\n"
+      L"; マウスを画面幅の 3 倍動かす必要があります。MouseGameDivX/Y でこれを打ち消し、MouseSpeed=1 で照準が窓の上のマウスの動きと\r\n"
+      L"; ほぼ同じだけ動くようにしています。速すぎ/遅すぎるときは MouseSpeed を変えてください (2 = 2 倍速、0.5 = 半分)。\r\n"
+      L"; 元の速さに戻すには MouseGameDivX=0 / MouseGameDivY=0 / MouseSpeed=1 にします\r\n"
+      L"MouseSpeed=1\r\nMouseGameDivX=3\r\nMouseGameDivY=2.25\r\n"
+      L"HideJoysticks=0\r\n"
+      DIR_KEYS(L"W", L"S", L"A", L"D")
+      L"A=V\r\nRT=V\r\nB=H\r\nX=G\r\nRB=G\r\nStart=SPACE\r\nBack=F3\r\n",
+      L"", L"",
+      L"; CD を入れていないと起動しないため、ゲームのフォルダを仮想 CD ドライブとして見せます ([CD])。\r\n"
+      L"; BGM は CD の音楽トラック (CD-DA) です。取り込んだ音楽ファイル (Track02.wav / Track02.mp3 … Track19) を\r\n"
+      L"; ゲームのフォルダの CDDA フォルダに置くと再生します。無い場合は BGM なしで進みます。\r\n"
+      L"; オープニングムービー (OPEN320.AVI) は Indeo 4 形式です。CD の INDEO フォルダのコーデック (IR41_32.DLL) を\r\n"
+      L"; ゲームのフォルダにコピーしてあり、MKWrap がゲームの中だけで使えるようにして再生します (Windows には登録しません)。\r\n"
+      L"; 通信対戦用の DPLAY.dll は、DirectPlay が無効な Windows 10/11 でも起動できるようにする代わりの部品です (通信対戦は DirectPlay を有効にした場合のみ)。\r\n",
+      L"\r\n[CD]\r\n"
+      L"; 仮想 CD ドライブ (中身はゲームのフォルダ)\r\n"
+      L"Emulate=1\r\nLabel=VCOP\r\n"
+      L"; CD の音楽トラック: トラック数と各トラックの長さ (音楽ファイルが無い場合はこの長さで再生したことにします)\r\n"
+      L"Tracks=19\r\n"
+      L"TrackLengths=16:04,0:13,2:23,0:57,1:11,4:15,3:42,3:35,1:43,2:43,2:24,2:21,2:48,0:11,0:13,1:21,3:56,4:11,3:00\r\n"
+      L"; 取り込んだ音楽ファイルのフォルダと音量 (0-100)\r\n"
+      L"AudioPath=CDDA\r\nVolume=100\r\n",
+      L"; 元は画面を 640x480 に切り替えて全画面で遊びます。ここでは枠付きの窓で表示します (Alt+Enter で擬似フルスクリーン)\r\n"
+      L"ModeChangeFullscreen=0\r\n" },
     /* ---- 第3弾: セガゲーム本舗 ---- */
     { L"gunstar.exe", L"ガンスターヒーローズ (セガゲーム本舗)", SEGA_TIMING, SEGA_INPUT, L"", L"", SEGA_NOTE, NULL, SEGA_DISPLAY },
 };

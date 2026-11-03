@@ -21,6 +21,7 @@ static BOOL (WINAPI *r_GetFileAttributesExA)(LPCSTR, GET_FILEEX_INFO_LEVELS, LPV
 static HMMIO (WINAPI *r_mmioOpenA)(LPSTR, LPMMIOINFO, DWORD);
 static HFILE (WINAPI *r_OpenFile)(LPCSTR, LPOFSTRUCT, UINT);
 static BOOL (WINAPI *r_SetCurrentDirectoryA)(LPCSTR);
+static HFILE (WINAPI *r__lopen)(LPCSTR, int);
 static UINT (WINAPI *r_GetDiskFreeSpaceA_dummy)(void);
 
 static int is_vdrive(LPCSTR p)
@@ -34,9 +35,28 @@ static LPCSTR map(LPCSTR p, char *buf)
     if (!is_vdrive(p)) return p;
     _snprintf(buf, MAX_PATH * 2, "%s%s%s", g_cdpath, (p[2] == '\\' || p[2] == '/') ? "" : "\\", p + 2);
     buf[MAX_PATH * 2 - 1] = 0;
+    /* インストール時にフォルダ構造を平らにした場合に備え、無ければ <path>\ファイル名 を試す */
+    if (r_GetFileAttributesA && r_GetFileAttributesA(buf) == INVALID_FILE_ATTRIBUTES && !strpbrk(p + 3, "*?")) {
+        const char *b = p + strlen(p);
+        while (b > p + 2 && b[-1] != '\\' && b[-1] != '/') b--;
+        if (*b && b > p + 3) {
+            char t[MAX_PATH * 2];
+            _snprintf(t, sizeof t, "%s\\%s", g_cdpath, b); t[sizeof t - 1] = 0;
+            if (r_GetFileAttributesA(t) != INVALID_FILE_ATTRIBUTES) {
+                if (g_cfg.log) mkw_log("CD: %s -> %s\n", p, t);
+                strcpy(buf, t);
+            }
+        }
+    }
     return buf;
 }
 
+/* 他のモジュール (MCI など) に渡すパス用。仮想ドライブでなければ p をそのまま返す */
+const char *cd_map_path(const char *p, char *buf /* MAX_PATH*2 */)
+{
+    if (!g_letter || !is_vdrive(p)) return p;
+    return map(p, buf);
+}
 static DWORD WINAPI hk_GetLogicalDrives(void) { return r_GetLogicalDrives() | (1u << (g_letter - 'A')); }
 static DWORD WINAPI hk_GetLogicalDriveStringsA(DWORD n, LPSTR buf)
 {
@@ -97,6 +117,11 @@ static HFILE WINAPI hk_OpenFile(LPCSTR p, LPOFSTRUCT o, UINT st)
     char b[MAX_PATH * 2];
     return r_OpenFile(map(p, b), o, st);
 }
+static HFILE WINAPI hk__lopen(LPCSTR p, int m)
+{
+    char b[MAX_PATH * 2];
+    return r__lopen(map(p, b), m);
+}
 static BOOL WINAPI hk_SetCurrentDirectoryA(LPCSTR p)
 {
     char b[MAX_PATH * 2];
@@ -136,6 +161,7 @@ void cd_hooks_install(void)
     r_GetFileAttributesExA = (void *)GetProcAddress(k32, "GetFileAttributesExA");
     r_OpenFile = (void *)GetProcAddress(k32, "OpenFile");
     r_SetCurrentDirectoryA = (void *)GetProcAddress(k32, "SetCurrentDirectoryA");
+    r__lopen = (void *)GetProcAddress(k32, "_lopen");
     wm = LoadLibraryA("winmm.dll");
     r_mmioOpenA = (void *)GetProcAddress(wm, "mmioOpenA");
     (void)r_GetDiskFreeSpaceA_dummy;
@@ -143,7 +169,8 @@ void cd_hooks_install(void)
     H("kernel32.dll", GetLogicalDrives); H("kernel32.dll", GetLogicalDriveStringsA); H("kernel32.dll", GetDriveTypeA);
     H("kernel32.dll", GetVolumeInformationA); H("kernel32.dll", CreateFileA); H("kernel32.dll", FindFirstFileA);
     H("kernel32.dll", GetFileAttributesA); H("kernel32.dll", GetFileAttributesExA); H("kernel32.dll", OpenFile);
-    H("kernel32.dll", SetCurrentDirectoryA); H("winmm.dll", mmioOpenA);
+    H("kernel32.dll", SetCurrentDirectoryA); H("winmm.dll", mmioOpenA); H("kernel32.dll", _lopen);
 #undef H
     mkw_log("仮想CDドライブ %c: -> %s (ラベル %s)\n", g_letter, g_cdpath, g_label);
+    cdda_init(g_letter, g_cdpath);
 }

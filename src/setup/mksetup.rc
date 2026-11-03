@@ -1,3 +1,4 @@
 #include <windows.h>
 1 24 "app.manifest"
 101 RCDATA "dinput.dll"
+102 RCDATA "dplay.dll"

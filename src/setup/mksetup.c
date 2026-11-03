@@ -15,6 +15,7 @@
 #include "profiles.h"
 
 #define IDR_WRAPDLL 101
+#define IDR_DPLAYDLL 102
 #define APP_TITLE L"MKSetup - メディアカイト CD 展開ツール"
 
 static HWND g_hwnd, g_log, g_src, g_dst, g_run, g_chk;
@@ -496,6 +497,40 @@ static int write_ini(const wchar_t *path, const mk_profile_t *p, const wchar_t *
     return 1;
 }
 
+/* DirectPlay (通信対戦用の部品) を読み込むゲーム向け: Windows 10/11 で DirectPlay が無効なら起動すらできないため、
+ * 代わりの DPLAY.dll (本物があればそれに処理を渡し、無ければ「通信対戦は使えない」と返す) をゲームのフォルダに置く */
+static void deploy_dplay_stub(const wchar_t *gdir)
+{
+    WIN32_FIND_DATAW fd; HANDLE h; wchar_t pat[MAX_PATH * 2], out[MAX_PATH * 2], who[MAX_PATH] = L"";
+    static const wchar_t *pats[] = { L"*.exe", L"*.dll" };
+    int i, need = 0;
+    for (i = 0; i < 2 && !need; i++) {
+        mk_path_join(pat, MAX_PATH * 2, gdir, pats[i]);
+        h = FindFirstFileW(pat, &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            wchar_t full[MAX_PATH * 2];
+            if (!_wcsicmp(fd.cFileName, L"dplay.dll")) continue;
+            mk_path_join(full, MAX_PATH * 2, gdir, fd.cFileName);
+            if (pe_imports(full, "dplay.dll")) { need = 1; wcsncpy(who, fd.cFileName, MAX_PATH - 1); break; }
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    if (!need) return;
+    mk_path_join(out, MAX_PATH * 2, gdir, L"DPLAY.dll");
+    if (mk_file_exists(out)) return;
+    {
+        HRSRC r = FindResourceW(NULL, MAKEINTRESOURCEW(IDR_DPLAYDLL), (LPCWSTR)RT_RCDATA); HGLOBAL g; DWORD sz, w;
+        if (!r || !(g = LoadResource(NULL, r))) return;
+        sz = SizeofResource(NULL, r);
+        h = CreateFileW(out, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (h == INVALID_HANDLE_VALUE) return;
+        WriteFile(h, LockResource(g), sz, &w, NULL);
+        CloseHandle(h);
+    }
+    mk_log(L"配置: %ls (%ls が DirectPlay を使うため。Windows 10/11 で DirectPlay が無効でも起動できるようにする代わりの部品)\r\n", out, who);
+}
+
 static int deploy_wrapper(const wchar_t *dir)
 {
     wchar_t exe[MAX_PATH * 2], gdir[MAX_PATH * 2], dll[MAX_PATH * 2], ini[MAX_PATH * 2], *p;
@@ -524,6 +559,7 @@ static int deploy_wrapper(const wchar_t *dir)
     }
     CloseHandle(h);
     mk_log(L"配置: %ls\r\n", dll);
+    deploy_dplay_stub(gdir);
     mk_path_join(ini, MAX_PATH * 2, gdir, L"mkwrap.ini");
     if (mk_file_exists(ini)) {
         wchar_t ini2[MAX_PATH * 2];
@@ -607,6 +643,80 @@ static void fix_cd_dirs(const wchar_t *src, const wchar_t *dst)
     free(buf);
 }
 
+/* セガ PC (バーチャコップなど) の SSP.INI 形式のインストーラ: [option] SourcePath1.. のフォルダをまとめて 1 つのフォルダに入れる */
+static int ssp_value(const wchar_t *ini, const char *key, char *out, int n)
+{
+    HANDLE h = CreateFileW(ini, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    char buf[16384]; DWORD rd = 0; char *line, *next; int in_opt = 0, kl = (int)strlen(key);
+    out[0] = 0;
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    ReadFile(h, buf, sizeof buf - 1, &rd, NULL); CloseHandle(h); buf[rd] = 0;
+    for (line = buf; line && *line; line = next) {
+        next = strpbrk(line, "\r\n");
+        if (next) { *next++ = 0; while (*next == '\r' || *next == '\n') next++; }
+        while (*line == ' ' || *line == '\t') line++;
+        if (*line == '[') { in_opt = !_strnicmp(line, "[option]", 8); continue; }
+        if (!in_opt || _strnicmp(line, key, kl)) continue;
+        line += kl;
+        while (*line == ' ' || *line == '\t') line++;
+        if (*line != '=') continue;
+        line++;
+        while (*line == ' ' || *line == '\t') line++;
+        lstrcpynA(out, line, n);
+        { int l = (int)strlen(out); while (l && (out[l - 1] == ' ' || out[l - 1] == '\t')) out[--l] = 0; }
+        return out[0] != 0;
+    }
+    return 0;
+}
+static int install_ssp(const wchar_t *src, const wchar_t *dst, int wrap)
+{
+    wchar_t ini[MAX_PATH * 2], pat[MAX_PATH * 2]; char v[MAX_PATH], key[32]; int i, n = 0, err = 0, dirs = 0;
+    WIN32_FIND_DATAW fd; HANDLE h;
+    mk_path_join(ini, MAX_PATH * 2, src, L"SSP.INI");
+    if (!mk_file_exists(ini) || !ssp_value(ini, "SourcePath1", v, sizeof v)) return 1;   /* SSP.INI 形式ではない */
+    if (!dst || !dst[0]) { mk_log(L"展開先を指定してください。\r\n"); return -1; }
+    mk_log(L"セガ PC のインストーラ (SSP.INI) です。ゲームのファイルを CD からコピーします。\r\n展開先: %ls\r\n", dst);
+    if (!mk_mkdirs(dst)) { mk_log(L"展開先フォルダを作成できません。\r\n"); return -1; }
+    for (i = 1; i <= 9; i++) {
+        wchar_t w[MAX_PATH], from[MAX_PATH * 2], *q;
+        sprintf(key, "SourcePath%d", i);
+        if (!ssp_value(ini, key, v, sizeof v)) continue;
+        MultiByteToWideChar(CP_ACP, 0, v, -1, w, MAX_PATH);
+        q = w; while (*q == L'\\' || *q == L'/') q++;
+        mk_path_join(from, MAX_PATH * 2, src, q);
+        if (!mk_dir_exists(from)) { mk_log(L"  %ls がありません\r\n", from); continue; }
+        mk_log(L"%ls\r\n", from);
+        if (copy_tree(from, dst, 0, &n)) err++;
+        dirs++;
+    }
+    if (!dirs) return 1;
+    /* 説明書 (ヘルプファイル。DocPath)。ゲームのヘルプメニューはゲームのフォルダの VCOP.HLP を開く */
+    if (ssp_value(ini, "DocPath", v, sizeof v)) {
+        wchar_t w[MAX_PATH], from[MAX_PATH * 2], *q; size_t l;
+        MultiByteToWideChar(CP_ACP, 0, v, -1, w, MAX_PATH);
+        l = wcslen(w); while (l && (w[l - 1] == L'\\' || w[l - 1] == L'/')) w[--l] = 0;
+        q = w; while (*q == L'\\' || *q == L'/') q++;
+        mk_path_join(from, MAX_PATH * 2, src, q);
+        if (mk_dir_exists(from)) { mk_log(L"%ls (説明書)\r\n", from); copy_tree(from, dst, 0, &n); }
+    }
+    /* 動画用のコーデック (Indeo など) は CD の INDEO フォルダにある。MKWrap がゲームの中だけで使うため一緒にコピー */
+    mk_path_join(pat, MAX_PATH * 2, src, L"INDEO\\*.DLL");
+    h = FindFirstFileW(pat, &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            wchar_t s2[MAX_PATH * 2], d2[MAX_PATH * 2];
+            mk_path_join(s2, MAX_PATH * 2, src, L"INDEO");
+            mk_path_join(s2, MAX_PATH * 2, s2, fd.cFileName);
+            mk_path_join(d2, MAX_PATH * 2, dst, fd.cFileName);
+            if (CopyFileW(s2, d2, FALSE)) { SetFileAttributesW(d2, FILE_ATTRIBUTE_NORMAL); n++; mk_log(L"  %ls (動画のコーデック)\r\n", fd.cFileName); }
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    mk_log(L"%d 個のファイルをコピーしました。\r\nレジストリやスタートメニューは変更していません。\r\n", n);
+    if (wrap) deploy_wrapper(dst);
+    return err ? -1 : 0;
+}
+
 /* ---------------- 全体の流れ ---------------- */
 static int run_job(const wchar_t *src, const wchar_t *dst, int wrap)
 {
@@ -615,6 +725,8 @@ static int run_job(const wchar_t *src, const wchar_t *dst, int wrap)
     mk_log(L"=== 工程1: 展開 ===\r\n展開元: %ls\r\n", src);
     if (!mk_dir_exists(src)) { mk_log(L"展開元が見つかりません。\r\n"); return -1; }
     g_srcroot = src;
+    if ((r = install_ssp(src, dst, wrap)) <= 0) return r;
+    r = 0;
     if (!find_installer(src, &f, 2)) {
         /* インストーラを持たず CD から直接起動する形式 (セガゲーム本舗など): ゲームのフォルダをそのままコピー */
         wchar_t exe[MAX_PATH * 2], root[4] = { src[0], L':', L'\\', 0 }, ar[MAX_PATH * 2];

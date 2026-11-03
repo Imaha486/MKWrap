@@ -31,7 +31,10 @@ $(BUILD):
 $(BUILD)/dinput.dll: $(WRAP_SRC) src/wrap/mkw.h src/wrap/ddraw_int.h src/wrap/d3d6_be.h src/wrap/exports.def | $(BUILD)
 	$(CC) $(WRAP_CFLAGS) -shared -o $@ $(WRAP_SRC) src/wrap/exports.def $(WRAP_LIBS) -Wl,--enable-stdcall-fixup -s
 
-$(BUILD)/mksetup_res.o: src/setup/mksetup.rc src/setup/app.manifest $(BUILD)/dinput.dll
+$(BUILD)/dplay.dll: src/stub/dplay.c src/stub/dplay.def | $(BUILD)
+	$(CC) -O2 $(WARN) -shared -nostdlib -o $@ src/stub/dplay.c src/stub/dplay.def -lkernel32 -Wl,--enable-stdcall-fixup -Wl,-e,_DllMain@12 -s
+
+$(BUILD)/mksetup_res.o: src/setup/mksetup.rc src/setup/app.manifest $(BUILD)/dinput.dll $(BUILD)/dplay.dll
 	$(WINDRES) -I$(BUILD) -Isrc/setup src/setup/mksetup.rc -O coff -o $@
 
 $(BUILD)/MKSetup.exe: $(SETUP_SRC) src/setup/common.h src/setup/profiles.h $(BUILD)/mksetup_res.o

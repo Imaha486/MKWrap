@@ -116,6 +116,13 @@ void cfg_load(void)
     g_cfg.stick_dirs = ini_int(L"Input", L"StickDirections", 8);
     g_cfg.hide_joysticks = ini_int(L"Input", L"HideJoysticks", 1);
     g_cfg.bg_input = ini_int(L"Input", L"BackgroundInput", 0);
+    {
+        double sp = ini_dbl(L"Input", L"MouseSpeed", 1.0);
+        g_cfg.mouse_speed_x = ini_dbl(L"Input", L"MouseSpeedX", sp);
+        g_cfg.mouse_speed_y = ini_dbl(L"Input", L"MouseSpeedY", sp);
+        g_cfg.mouse_div_x = ini_dbl(L"Input", L"MouseGameDivX", 0);
+        g_cfg.mouse_div_y = ini_dbl(L"Input", L"MouseGameDivY", 0);
+    }
     g_cfg.background_input = ini_int(L"Input", L"BackgroundInput", 0);
     g_cfg.post_messages = ini_int(L"Input", L"PostKeyMessages", 2);
     ini_str(L"Input", L"PauseKey", "PAUSE", tmp, sizeof tmp);

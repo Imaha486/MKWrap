@@ -153,6 +153,14 @@ static FARPROC WINAPI hk_GetProcAddress(HMODULE mod, LPCSTR name)
     return real_GetProcAddress(mod, name);
 }
 
+static int (WINAPI *r_GetWindowTextA)(HWND, LPSTR, int);
+static int WINAPI hk_GetWindowTextA(HWND h, LPSTR s, int n)
+{
+    int r = r_GetWindowTextA(h, s, n);
+    if (g_cfg.log >= 2 && r > 0) { char cls[64] = ""; DWORD pid = 0; GetClassNameA(h, cls, sizeof cls); GetWindowThreadProcessId(h, &pid);
+        mkw_log("GetWindowText %p [%s] class=%s pid=%lu%s\n", (void *)h, s, cls, (unsigned long)pid, pid == GetCurrentProcessId() ? " (自分)" : ""); }
+    return r;
+}
 static int (WINAPI *r_MessageBoxA)(HWND, LPCSTR, LPCSTR, UINT);
 static int WINAPI hk_MessageBoxA(HWND h, LPCSTR t, LPCSTR c, UINT f)
 {
@@ -270,6 +278,8 @@ void hooks_install(void)
     if (g_cfg.log) {
         r_MessageBoxA = (void *)GetProcAddress(LoadLibraryA("user32.dll"), "MessageBoxA");
         iat_hook(g_exe, "user32.dll", "MessageBoxA", (void *)hk_MessageBoxA);
+        r_GetWindowTextA = (void *)GetProcAddress(LoadLibraryA("user32.dll"), "GetWindowTextA");
+        iat_hook(g_exe, "user32.dll", "GetWindowTextA", (void *)hk_GetWindowTextA);
     }
     if (g_cfg.virtualize_window) win_hooks_install();
     timing_hooks_install();

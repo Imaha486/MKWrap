@@ -2,6 +2,7 @@
  * ゲームには元のサイズ (論理サイズ) の窓に見せかけ、実際の窓は拡大する。
  * GDI の描画先 DC は論理サイズのキャンバス (メモリ DC) に差し替え、転送時に拡大表示する。 */
 #include "mkw.h"
+#include <mmsystem.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -206,6 +207,7 @@ static vwin_t *vwin_register(HWND h, int lw, int lh)
     w->hwnd = h;
     if (lw > 0 && lh > 0) { w->lw = lw; w->lh = lh; }
     else { r_GetClientRect(h, &rc); w->lw = rc.right; w->lh = rc.bottom; }
+    w->popup = !(r_GetWindowLongA(h, GWL_STYLE) & WS_CAPTION);
     w->orig_proc = (WNDPROC)GetWindowLongPtrA(h, GWLP_WNDPROC);
     SetWindowLongPtrA(h, GWLP_WNDPROC, (LONG_PTR)vwin_proc);
     if (!g_main) g_main = w;
@@ -243,6 +245,7 @@ static char g_mci_alias[64];
 static RECT g_mci_dest;        /* ゲームが指定した位置 (論理座標) */
 static int g_mci_has_dest;
 static volatile int g_movie;   /* 動画を再生中 (キャンバスで上書きしない) */
+static void movie_fit_cmd(void);
 
 static void map_logical(vwin_t *w, const RECT *in, RECT *out)
 {
@@ -263,6 +266,69 @@ static void map_logical(vwin_t *w, const RECT *in, RECT *out)
     out->right = d.left + (int)((long long)in->right * (d.right - d.left) / lw);
     out->bottom = d.top + (int)((long long)in->bottom * (d.bottom - d.top) / lh);
 }
+/* マウス: 実際のクライアント座標 ⇔ ゲームから見た座標 (論理サイズ) */
+static void logical_area(vwin_t *w, RECT *d, int *lw, int *lh)
+{
+    RECT full = { 0, 0, 0, 0 };
+    *lw = w->lw > 0 ? w->lw : 640; *lh = w->lh > 0 ? w->lh : 480;
+    full.right = *lw; full.bottom = *lh;
+    map_logical(w, &full, d);
+}
+static void mouse_real_to_logical(vwin_t *w, int *x, int *y)
+{
+    RECT d; int lw, lh, dw, dh;
+    logical_area(w, &d, &lw, &lh);
+    dw = d.right - d.left; dh = d.bottom - d.top;
+    if (dw <= 0 || dh <= 0 || (dw == lw && dh == lh && !d.left && !d.top)) return;
+    *x = (int)(((long long)(*x - d.left) * lw + dw / 2) / dw);
+    *y = (int)(((long long)(*y - d.top) * lh + dh / 2) / dh);
+}
+static void mouse_logical_to_real(vwin_t *w, int *x, int *y)
+{
+    RECT d; int lw, lh;
+    logical_area(w, &d, &lw, &lh);
+    *x = d.left + (int)(((long long)*x * (d.right - d.left) + lw / 2) / lw);
+    *y = d.top + (int)(((long long)*y * (d.bottom - d.top) + lh / 2) / lh);
+}
+/* 全画面前提のゲーム (枠なし窓) は SetCursorPos に画面座標 = ゲーム画面の座標を渡すので、窓の中の位置に直す。
+ * 前面に無いときはカーソルを動かさない (他の窓の操作を邪魔しない) */
+static BOOL (WINAPI *r_SetCursorPos)(int, int);
+/* 相対移動のマウス: ゲームが毎回カーソルを戻す位置 (論理座標)。マウスの速さの補正に使う */
+static int g_warp_valid, g_warp_x, g_warp_y;
+static double g_macc_x, g_macc_y;
+/* 1 軸分: 移動量 d (論理座標の画素、小数) を速さに合わせ、ゲームに渡す移動量 (整数) にする */
+static int mouse_axis(double d, double speed, double div, double *acc)
+{
+    double want; int n;
+    if (div > 0) {
+        /* ゲームは「移動量 / div」を切り捨てて照準を動かす。
+         * 照準が speed 画素動くように、切り捨てで消えない大きさにして渡し、端数は次回へ持ち越す */
+        *acc += d * speed;
+        n = (int)*acc; *acc -= n;
+        if (!n) return 0;
+        want = (n > 0 ? n : -n) * div;
+        { int s = (int)want; if (s < want) s++; return n > 0 ? s : -s; }
+    }
+    *acc += d * speed;
+    n = (int)*acc; *acc -= n;
+    return n;
+}
+static BOOL WINAPI hk_SetCursorPos(int x, int y)
+{
+    vwin_t *w = g_main;
+    if (w && w->hwnd && w->popup) {
+        g_warp_valid = 1; g_warp_x = x; g_warp_y = y;
+        HWND f = GetForegroundWindow(); DWORD pid = 0; POINT p;
+        if (f) GetWindowThreadProcessId(f, &pid);
+        if (pid != GetCurrentProcessId() || IsIconic(w->hwnd)) return TRUE;
+        p.x = x; p.y = y;
+        mouse_logical_to_real(w, (int *)&p.x, (int *)&p.y);
+        r_ClientToScreen(w->hwnd, &p);
+        return r_SetCursorPos(p.x, p.y);
+    }
+    return r_SetCursorPos(x, y);
+}
+
 static void mci_apply_dest(void)
 {
     vwin_t *w = g_main; RECT r; char cmd[160];
@@ -312,6 +378,58 @@ static int fourcc_ok(DWORD fcc)
     if (h) { pClose(h); return 1; }
     return 0;
 }
+/* ゲームのフォルダ (または CD) にある VfW コーデック (IR41_32.DLL など) をこのプロセスの中だけで使えるようにする */
+typedef BOOL (WINAPI *ICInstall_t)(DWORD, DWORD, LPARAM, LPSTR, UINT);
+static int codec_install_local(DWORD hd, DWORD cp)
+{
+    static const char *names[] = { "IR41_32.DLL", "INDEO\\IR41_32.DLL", "IR41_32.AX", "IR50_32.DLL", "INDEO\\IR50_32.DLL", "IR32_32.DLL", "INDEO\\IR32_32.DLL" };
+    static int done;
+    ICInstall_t pInst; HMODULE vfw; int i, ok = 0;
+    char dir[MAX_PATH], path[MAX_PATH];
+    if (done) return 0;
+    done = 1;
+    vfw = LoadLibraryA("msvfw32.dll");
+    pInst = vfw ? (ICInstall_t)GetProcAddress(vfw, "ICInstall") : NULL;
+    if (!pInst) return 0;
+    WideCharToMultiByte(CP_ACP, 0, g_gamedir, -1, dir, MAX_PATH, NULL, NULL);
+    for (i = 0; i < (int)(sizeof names / sizeof names[0]); i++) {
+        HMODULE m; FARPROC dp;
+        _snprintf(path, MAX_PATH, "%s\\%s", dir, names[i]); path[MAX_PATH - 1] = 0;
+        if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) continue;
+        m = LoadLibraryA(path);
+        dp = m ? GetProcAddress(m, "DriverProc") : NULL;
+        if (!dp) { mkw_log("コーデック %s を読み込めません\n", path); continue; }
+        {   /* ファイル名から担当する形式を決める (IR41=IV41, IR50=IV50, IR32=IV32/IV31) */
+            const char *b = strrchr(path, '\\') + 1; DWORD f[2]; int nf = 0, j;
+            if (!_strnicmp(b, "IR41", 4)) { f[nf++] = FCC4('I', 'V', '4', '1'); }
+            else if (!_strnicmp(b, "IR50", 4)) { f[nf++] = FCC4('I', 'V', '5', '0'); }
+            else { f[nf++] = FCC4('I', 'V', '3', '2'); f[nf++] = FCC4('I', 'V', '3', '1'); }
+            for (j = 0; j < nf; j++) {
+                DWORD lo = f[j] | 0x20202020u;
+                pInst(FCC4('v', 'i', 'd', 'c'), f[j], (LPARAM)dp, NULL, 1 /* ICINSTALL_FUNCTION */);
+                pInst(FCC4('v', 'i', 'd', 'c'), lo, (LPARAM)dp, NULL, 1);
+            }
+            mkw_log("コーデック %s をこのゲームの中だけで使えるようにしました\n", path);
+            ok = 1;
+        }
+    }
+    (void)hd; (void)cp;
+    return ok;
+}
+/* 動画を再生できるか (できなければ同梱コーデックを試す) */
+static int movie_playable(const char *path)
+{
+    DWORD hd, cp;
+    if (!avi_video_fourcc(path, &hd, &cp)) { if (g_cfg.log) mkw_log("  AVI の形式を読めません: %s\n", path); return 1; }
+    if (g_cfg.log) { char f1[5] = { 0 }, f2[5] = { 0 }; memcpy(f1, &hd, 4); memcpy(f2, &cp, 4); mkw_log("  映像形式 %s / %s\n", f1, f2); }
+    if (fourcc_ok(hd) || fourcc_ok(cp)) return 1;
+    if (codec_install_local(hd, cp) && (fourcc_ok(hd) || fourcc_ok(cp))) return 1;
+    {
+        char f1[5] = { 0 }, f2[5] = { 0 }; memcpy(f1, &hd, 4); memcpy(f2, &cp, 4);
+        mkw_log("動画 %s の映像形式 (%s / %s) を再生できる部品がこの PC にないため、動画を飛ばします\n", path, f1, f2);
+    }
+    return 0;
+}
 static char g_fake_alias[64];   /* 再生を飛ばしている動画の別名 */
 
 static DWORD WINAPI hk_mciSendStringA(LPCSTR cmd, LPSTR ret, UINT n, HWND cb)
@@ -325,7 +443,7 @@ static DWORD WINAPI hk_mciSendStringA(LPCSTR cmd, LPSTR ret, UINT n, HWND cb)
     /* 動画を開く: 映像を伸長できない (Indeo など Windows 10/11 に無い形式) 場合は再生したことにして飛ばす */
     if (k >= 2 && !_stricmp(verb, "open") && g_cfg.movie != 1) {
         const char *p = cmd + 4, *bang, *al;
-        char path[MAX_PATH], als[64]; DWORD hd, cp; int skip = 0;
+        char path[MAX_PATH], als[64]; int skip = 0;
         while (*p == ' ') p++;
         bang = strchr(p, '!');
         path[0] = als[0] = 0;
@@ -340,11 +458,7 @@ static DWORD WINAPI hk_mciSendStringA(LPCSTR cmd, LPSTR ret, UINT n, HWND cb)
         if (path[0] == '"') { memmove(path, path + 1, strlen(path)); if (path[0] && path[strlen(path) - 1] == '"') path[strlen(path) - 1] = 0; }
         if (path[0]) {
             if (g_cfg.movie == 2) skip = 1;
-            else if (avi_video_fourcc(path, &hd, &cp) && !fourcc_ok(hd) && !fourcc_ok(cp)) {
-                char f1[5] = { 0 }, f2[5] = { 0 }; memcpy(f1, &hd, 4); memcpy(f2, &cp, 4);
-                mkw_log("動画 %s の映像形式 (%s / %s) を再生できる部品がこの PC にないため、動画を飛ばします\n", path, f1, f2);
-                skip = 1;
-            }
+            else if (!movie_playable(path)) skip = 1;
         }
         if (skip) {
             lstrcpynA(g_fake_alias, als, sizeof g_fake_alias);
@@ -380,6 +494,137 @@ static DWORD WINAPI hk_mciSendStringA(LPCSTR cmd, LPSTR ret, UINT n, HWND cb)
     }
     if (k >= 2 && (!_stricmp(verb, "stop") || !_stricmp(verb, "close"))) { g_movie = 0; g_mci_has_dest = 0; }
     return r_mciSendStringA(cmd, ret, n, cb);
+}
+
+/* mciSendCommand 版 (バーチャコップなど)。cdaudio は cdda.c、動画は再生できなければ飛ばす */
+typedef MCIERROR (WINAPI *mciSendCommandA_t)(MCIDEVICEID, UINT, DWORD_PTR, DWORD_PTR);
+typedef MCIDEVICEID (WINAPI *mciGetDeviceIDA_t)(LPCSTR);
+static mciSendCommandA_t r_mciSendCommandA;
+static mciGetDeviceIDA_t r_mciGetDeviceIDA;
+#define FAKE_MOVIE_ID 0x6A1E
+static MCIDEVICEID g_movie_id;   /* 本当に開いた動画のデバイス */
+
+/* mciSendCommand で開いた動画をゲームの窓のクライアント全体に (縦横比を保って) 合わせる */
+static void movie_fit_cmd(void)
+{
+    MCI_STATUS_PARMS st; MCI_ANIM_RECT_PARMS rp; HWND mw, par; RECT cl, src; int W, H, dw, dh, x, y;
+    if (!g_movie_id || !r_mciSendCommandA) return;
+    memset(&st, 0, sizeof st); st.dwItem = 0x4001 /* MCI_DGV_STATUS_HWND */;
+    { MCIERROR e = r_mciSendCommandA(g_movie_id, MCI_STATUS, MCI_STATUS_ITEM | MCI_WAIT, (DWORD_PTR)&st);
+      if (e) { if (g_cfg.log) mkw_log("  動画の窓を取得できません (%lu)\n", (unsigned long)e); return; } }
+    mw = (HWND)st.dwReturn;
+    if (!mw || !IsWindow(mw)) { if (g_cfg.log) mkw_log("  動画の窓が無効です (%p)\n", (void *)mw); return; }
+    memset(&rp, 0, sizeof rp);
+    if (r_mciSendCommandA(g_movie_id, MCI_WHERE, MCI_ANIM_WHERE_SOURCE, (DWORD_PTR)&rp) || rp.rc.right <= 0 || rp.rc.bottom <= 0) SetRect(&src, 0, 0, 320, 240);
+    else SetRect(&src, 0, 0, rp.rc.right, rp.rc.bottom);
+    par = (GetWindowLongA(mw, GWL_STYLE) & WS_CHILD) ? GetParent(mw) : NULL;
+    if (par) r_GetClientRect(par, &cl);
+    else if (g_main && g_main->hwnd) { POINT o = { 0, 0 }; r_GetClientRect(g_main->hwnd, &cl); r_ClientToScreen(g_main->hwnd, &o); OffsetRect(&cl, o.x, o.y); }
+    else return;
+    W = cl.right - cl.left; H = cl.bottom - cl.top;
+    if (W <= 0 || H <= 0) return;
+    {   /* 映像は 4:3 として扱う (320x240 / 320x200 の動画をゲーム画面と同じ比率で) */
+        double ar = 4.0 / 3.0;
+        dw = W; dh = (int)(W / ar + 0.5);
+        if (dh > H) { dh = H; dw = (int)(H * ar + 0.5); }
+    }
+    x = cl.left + (W - dw) / 2; y = cl.top + (H - dh) / 2;
+    SetWindowPos(mw, HWND_TOP, x, y, dw, dh, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    memset(&rp, 0, sizeof rp); SetRect(&rp.rc, 0, 0, dw, dh);   /* MCI の RECT は right/bottom が幅/高さ */
+    {
+        MCIERROR e = r_mciSendCommandA(g_movie_id, MCI_PUT, MCI_ANIM_PUT_DESTINATION | MCI_ANIM_RECT | MCI_WAIT, (DWORD_PTR)&rp);
+        RECT wr; GetWindowRect(mw, &wr);
+        if (g_cfg.log) mkw_log("  動画の表示位置 %d,%d %dx%d (元 %dx%d) put=%lu 窓 %ldx%ld\n", x, y, dw, dh, (int)src.right, (int)src.bottom,
+                               (unsigned long)e, wr.right - wr.left, wr.bottom - wr.top);
+    }
+}
+int mkw_movie_playing(void) { return g_movie; }
+
+static void mci_notify(DWORD_PTR fl, DWORD_PTR parm, MCIDEVICEID id)
+{
+    if ((fl & MCI_NOTIFY) && parm) {
+        HWND h = (HWND)((MCI_GENERIC_PARMS *)parm)->dwCallback;
+        if (!h && g_main) h = g_main->hwnd;
+        if (h) PostMessageA(h, MM_MCINOTIFY, MCI_NOTIFY_SUCCESSFUL, id);
+    }
+}
+static const char *mci_msg_name(UINT m)
+{
+    switch (m) {
+    case MCI_OPEN: return "OPEN"; case MCI_CLOSE: return "CLOSE"; case MCI_PLAY: return "PLAY"; case MCI_STOP: return "STOP";
+    case MCI_PAUSE: return "PAUSE"; case MCI_RESUME: return "RESUME"; case MCI_SEEK: return "SEEK"; case MCI_STATUS: return "STATUS";
+    case MCI_SET: return "SET"; case MCI_WINDOW: return "WINDOW"; case MCI_PUT: return "PUT"; case MCI_WHERE: return "WHERE";
+    case MCI_GETDEVCAPS: return "GETDEVCAPS"; case MCI_INFO: return "INFO";
+    }
+    return "?";
+}
+static MCIERROR WINAPI hk_mciSendCommandA(MCIDEVICEID id, UINT msg, DWORD_PTR fl, DWORD_PTR parm)
+{
+    MCIERROR rc;
+    if (g_cfg.log) mkw_log("mciSendCommand: id=%u %s(0x%X) flags=0x%lX\n", id, mci_msg_name(msg), msg, (unsigned long)fl);
+    if (cdda_command(id, msg, fl, parm, &rc)) return rc;
+    if (msg == MCI_OPEN && parm && (fl & MCI_OPEN_ELEMENT) && !(fl & MCI_OPEN_ELEMENT_ID) && ((MCI_OPEN_PARMSA *)parm)->lpstrElementName) {
+        /* 仮想 CD 上のファイルは実際の場所に置き換えて開かせる (MCI は CreateFile のフックを通らない) */
+        static char mapped[MAX_PATH * 2];
+        MCI_OPEN_PARMSA *op = (MCI_OPEN_PARMSA *)parm;
+        const char *m = cd_map_path(op->lpstrElementName, mapped);
+        if (m != op->lpstrElementName) { if (g_cfg.log) mkw_log("  %s -> %s\n", op->lpstrElementName, m); op->lpstrElementName = (LPSTR)m; }
+    }
+    if (msg == MCI_OPEN && parm && (fl & MCI_OPEN_ELEMENT) && !(fl & MCI_OPEN_ELEMENT_ID) && g_cfg.movie != 1) {
+        MCI_OPEN_PARMSA *op = (MCI_OPEN_PARMSA *)parm;
+        const char *el = op->lpstrElementName, *ext = el ? strrchr(el, '.') : NULL;
+        if (g_cfg.log) mkw_log("  動画を開く: %s\n", el ? el : "(null)");
+        if (ext && !_stricmp(ext, ".avi")) {
+            int skip = g_cfg.movie == 2;
+            if (skip) mkw_log("動画 %s を飛ばします (Movie=skip)\n", el);
+            else skip = !movie_playable(el);
+            if (skip) {
+                op->wDeviceID = FAKE_MOVIE_ID;
+                if (fl & MCI_OPEN_ALIAS && op->lpstrAlias) lstrcpynA(g_fake_alias, op->lpstrAlias, sizeof g_fake_alias);
+                else lstrcpynA(g_fake_alias, "\x01", sizeof g_fake_alias);
+                mci_notify(fl, parm, FAKE_MOVIE_ID);
+                return 0;
+            }
+        }
+    }
+    if (id == FAKE_MOVIE_ID && g_fake_alias[0]) {
+        if (msg == MCI_STATUS && parm) {
+            MCI_STATUS_PARMS *sp = (MCI_STATUS_PARMS *)parm;
+            sp->dwReturn = (fl & MCI_STATUS_ITEM) && sp->dwItem == MCI_STATUS_MODE ? MCI_MODE_STOP :
+                           (fl & MCI_STATUS_ITEM) && sp->dwItem == MCI_STATUS_READY ? TRUE : 0;
+        }
+        if (msg == MCI_WHERE && parm) SetRect(&((MCI_ANIM_RECT_PARMS *)parm)->rc, 0, 0, 320, 240);
+        if (msg == MCI_CLOSE) g_fake_alias[0] = 0;
+        mci_notify(fl, parm, FAKE_MOVIE_ID);
+        return 0;
+    }
+    if (msg == MCI_PLAY && id == g_movie_id && g_main && g_main->hwnd) {
+        HDC dc = r_GetDC(g_main->hwnd); RECT cl;
+        if (dc) { r_GetClientRect(g_main->hwnd, &cl); FillRect(dc, &cl, (HBRUSH)GetStockObject(BLACK_BRUSH)); r_ReleaseDC(g_main->hwnd, dc); }
+        g_movie = 1;
+        /* 全画面再生 (画面モードを 320x240 などに切り替える) は使わず、ゲームの窓の中に拡大して表示する */
+        if (fl & 0x02000000 /* MCI_MCIAVI_PLAY_FULLSCREEN */) {
+            fl &= ~(DWORD_PTR)0x02000000;
+            if (g_cfg.log) mkw_log("  全画面再生をやめ、窓の中に表示します\n");
+        }
+        movie_fit_cmd();
+    }
+    rc = r_mciSendCommandA(id, msg, fl, parm);
+    if (msg == MCI_PLAY && id == g_movie_id && !rc) movie_fit_cmd();   /* 再生開始時に MCI が窓の大きさを戻すことがある */
+    if (msg == MCI_OPEN && !rc && parm && (fl & MCI_OPEN_ELEMENT)) {
+        const char *el = ((MCI_OPEN_PARMSA *)parm)->lpstrElementName, *ext = el ? strrchr(el, '.') : NULL;
+        if (ext && !_stricmp(ext, ".avi")) g_movie_id = ((MCI_OPEN_PARMSA *)parm)->wDeviceID;
+    }
+    if (g_movie_id && id == g_movie_id && (msg == MCI_STOP || msg == MCI_CLOSE)) { g_movie = 0; if (msg == MCI_CLOSE) g_movie_id = 0; }
+    if (rc && g_cfg.log) mkw_log("  -> エラー %lu\n", (unsigned long)rc);
+    return rc;
+}
+static MCIDEVICEID WINAPI hk_mciGetDeviceIDA(LPCSTR name)
+{
+    MCIDEVICEID d;
+    if (cdda_device_id(name, &d)) return d;
+    if (name && g_fake_alias[0] && !_stricmp(name, g_fake_alias)) return FAKE_MOVIE_ID;
+    return r_mciGetDeviceIDA(name);
 }
 
 static void vwin_present_now(vwin_t *w);
@@ -611,6 +856,32 @@ static LRESULT CALLBACK vwin_proc(HWND h, UINT m, WPARAM wp, LPARAM lp)
     WNDPROC op = w ? w->orig_proc : DefWindowProcA;
     LRESULT r;
     if (!w) return DefWindowProcA(h, m, wp, lp);
+    if ((m >= WM_MOUSEMOVE && m <= WM_MBUTTONDBLCLK) || (m >= 0x020B /* WM_XBUTTONDOWN */ && m <= 0x020D)) {
+        int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
+        if (g_warp_valid && w == g_main && m == WM_MOUSEMOVE) {
+            /* カーソルを戻す作りのゲームは、前面に無いときにマウスの移動を渡すと照準が飛ぶので渡さない */
+            HWND f = GetForegroundWindow(); DWORD pid = 0;
+            if (f) GetWindowThreadProcessId(f, &pid);
+            if (pid != GetCurrentProcessId()) return 0;
+        }
+        if (g_warp_valid && w == g_main && (g_cfg.mouse_speed_x != 1.0 || g_cfg.mouse_speed_y != 1.0 || g_cfg.mouse_div_x > 0 || g_cfg.mouse_div_y > 0)) {
+            /* ゲームがカーソルを中央に戻して移動量で照準を動かす作り: 移動量を速さに合わせて渡す */
+            int cx = g_warp_x, cy = g_warp_y, lw, lh; RECT d; double dx, dy;
+            mouse_logical_to_real(w, &cx, &cy);   /* 戻し先の実際の座標 */
+            logical_area(w, &d, &lw, &lh);
+            dx = d.right > d.left ? (double)(x - cx) * lw / (d.right - d.left) : 0;
+            dy = d.bottom > d.top ? (double)(y - cy) * lh / (d.bottom - d.top) : 0;
+            if (m == WM_MOUSEMOVE) {
+                x = g_warp_x + mouse_axis(dx, g_cfg.mouse_speed_x, g_cfg.mouse_div_x, &g_macc_x);
+                y = g_warp_y + mouse_axis(dy, g_cfg.mouse_speed_y, g_cfg.mouse_div_y, &g_macc_y);
+            } else { x = g_warp_x; y = g_warp_y; }
+            if (x < 0) x = 0;
+            if (y < 0) y = 0;
+            if (x > 0x7FFF) x = 0x7FFF;
+            if (y > 0x7FFF) y = 0x7FFF;
+        } else mouse_real_to_logical(w, &x, &y);
+        lp = MAKELPARAM((WORD)(short)x, (WORD)(short)y);
+    }
     switch (m) {
     case WM_ACTIVATEAPP:
         mkw_log("WM_ACTIVATEAPP %d (相手のスレッド %lu)%s\n", (int)wp, (unsigned long)lp, (!wp && g_cfg.keep_active) ? " → ゲームには伝えない" : "");
@@ -668,6 +939,7 @@ static LRESULT CALLBACK vwin_proc(HWND h, UINT m, WPARAM wp, LPARAM lp)
                 HDC dc = r_GetDC(h); RECT cl;
                 if (dc) { r_GetClientRect(h, &cl); FillRect(dc, &cl, (HBRUSH)GetStockObject(BLACK_BRUSH)); r_ReleaseDC(h, dc); }
                 mci_apply_dest();
+                movie_fit_cmd();
             }
         }
         break;
@@ -1248,6 +1520,8 @@ void win_hooks_install(void)
     H("user32.dll", CreateWindowExW);
     H("user32.dll", MoveWindow);
     H("user32.dll", SetWindowPos);
+    r_SetCursorPos = GP("user32.dll", "SetCursorPos");
+    H("user32.dll", SetCursorPos);
     H("user32.dll", GetClientRect);
     H("user32.dll", GetWindowRect);
     H("user32.dll", GetDC);
@@ -1275,6 +1549,10 @@ void win_hooks_install(void)
     H("gdi32.dll", StretchBlt);
     r_mciSendStringA = (mciSendStringA_t)GP("winmm.dll", "mciSendStringA");
     if (r_mciSendStringA) H("winmm.dll", mciSendStringA);
+    r_mciSendCommandA = (mciSendCommandA_t)GP("winmm.dll", "mciSendCommandA");
+    if (r_mciSendCommandA) H("winmm.dll", mciSendCommandA);
+    r_mciGetDeviceIDA = (mciGetDeviceIDA_t)GP("winmm.dll", "mciGetDeviceIDA");
+    if (r_mciGetDeviceIDA) H("winmm.dll", mciGetDeviceIDA);
 #undef H
 }
 

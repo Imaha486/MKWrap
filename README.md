@@ -16,13 +16,13 @@
 
 | 区分 | 内容 |
 |---|---|
-| 展開 | InstallShield 3 (`.Z`)、InstallShield 5/6 (`data1.hdr` / `data1.cab`、CD 上の非圧縮ファイル込み)、Windows Installer (非圧縮 `.msi`、圧縮 `.msi` は管理者用インストール) |
+| 展開 | セガ PC (`SSP.INI`)、InstallShield 3 (`.Z`)、InstallShield 5/6 (`data1.hdr` / `data1.cab`、CD 上の非圧縮ファイル込み)、Windows Installer (非圧縮 `.msi`、圧縮 `.msi` は管理者用インストール) |
 | 表示 | 任意倍率の拡大 (窓の枠をドラッグして自由に拡縮も可)、Alt+Enter で擬似フルスクリーン (縦横比維持・整数倍指定可)、Direct3D9 または GDI で描画 |
 | DirectDraw | DirectDraw 1～7 をソフトウェアで肩代わり (8/16/32bpp、パレット、カラーキー、フリップ)。ゲームの解像度変更は実際には行わず擬似フルスクリーンで表示 |
 | GDI 描画のゲーム | 窓の DC への描画を論理サイズのキャンバスに受け、拡大表示 |
 | 入力 | XInput コントローラのボタン/スティックを任意のキー (同時押し可) に割り当て。DirectInput・GetAsyncKeyState・メニューのショートカット (F1～F12) に効く |
 | 速度 | 時計の進みを補正して本来の周期 (60.606Hz など) に合わせる、1ms 精度のタイマー、timeSetEvent の置き換え、フレーム同期処理の置き換えパッチ |
-| そのほか | 一時停止 (キー/パッド、タイトルバーに「 - Pause」、音も停止)、レジストリの INI への置き換え、仮想 CD-ROM ドライブ、高 DPI 対応 |
+| そのほか | 一時停止 (キー/パッド、タイトルバーに「 - Pause」、音も停止)、レジストリの INI への置き換え、仮想 CD-ROM ドライブと CD-DA (音楽トラック) のエミュレーション、動画コーデックのゲーム内だけでの登録、DirectPlay が無効な Windows 向けの代わりの DPLAY.dll、高 DPI 対応 |
 
 ## 動作確認済みタイトル
 
@@ -44,6 +44,7 @@
 | ロックマン DASH 鋼の冒険心 | rockman.exe | InstallShield 5 + CD のデータフォルダ (Dat / Sph / BGM) | なし (Direct3D 6 を MKWrap が描画) |
 | バブルボブル | bublbobl.exe | InstallShield 3 | 62.5Hz → 59.185Hz |
 | ガンスターヒーローズ (セガゲーム本舗) | GUNSTAR.exe | なし (CD から直接起動、フォルダをコピー) | 垂直同期 60Hz → 59.92Hz |
+| バーチャコップ (Windows 版) | PPJDD.EXE | セガ PC (SSP.INI、フォルダをコピー) | なし (仮想 CD・CD-DA・Indeo 4 の動画) |
 
 未登録のタイトルや、割り当てがゲームと合わない場合は、ゲーム中に **Ctrl+F12** (またはパッドの LB+RB+Back を 1.5 秒押す) で
 「パッドのボタン → キーボードのキー」の順に押すだけで割り当てを覚えさせられます (mkwrap.ini に保存)。

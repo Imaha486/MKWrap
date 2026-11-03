@@ -24,7 +24,7 @@
 | Renderer | auto | auto = Direct3D9 (失敗時 GDI)、gdi = GDI のみ |
 | VSync | 0 | 1 = Direct3D9 の表示を垂直同期に合わせる |
 | DpiAware | 1 | 高 DPI 対応として動かす (ぼやけ防止) |
-| Movie | auto | ゲームの動画 (MCI の AVI)。auto = この PC で映像を再生できない形式 (Indeo など) なら飛ばす / play = そのまま再生 / skip = 常に飛ばす |
+| Movie | auto | ゲームの動画 (MCI の AVI)。auto = この PC で映像を再生できない形式 (Indeo など) なら、ゲームのフォルダにあるコーデック (IR41_32.DLL など) をゲームの中だけで使えるようにし、それでも再生できなければ飛ばす / play = そのまま再生 / skip = 常に飛ばす |
 | BackgroundInput | 0 | (Input) 1 = ゲームが前面に無いときもキー・パッドの入力を渡す。0 では前面に無いとき何も押していない状態を返す |
 | KeepActive | 0 | 1 = 他のアプリに切り替えても、ゲームに非アクティブを伝えない (非アクティブで止まるゲームを止めない) |
 | DirectDraw | auto | auto = MKWrap の DirectDraw を使う (DirectX 6 の Direct3D も描画)。それ以外の Direct3D を求められたら native に書き換えて起動し直す / emulate = 常に MKWrap / native = 置き換えない (本物か、同じフォルダの dgVoodoo2 などの ddraw.dll) |
@@ -55,6 +55,8 @@
 | Deadzone | 35 | アナログスティックの遊び (%) |
 | StickDirections | 8 | スティックを 8 方向 / 4 方向に変換 |
 | KeyboardExclusive | 0 | 0 = ゲームが DirectInput のキーボードを排他モードで使おうとしても非排他にする (Alt+Enter などを効かせるため) |
+| MouseSpeed | 1 | ゲームがカーソルを中央に戻して移動量で照準などを動かす作りのとき、マウスの速さの倍率 (`MouseSpeedX` / `MouseSpeedY` で縦横別) |
+| MouseGameDivX / MouseGameDivY | 0 | そのゲームが移動量を割る値 (分かっている場合)。指定すると MouseSpeed=1 で「マウスを 1 画素動かす = 照準が 1 画素動く」になり、細かい移動が切り捨てで消えない |
 | HideJoysticks | 1 | ゲームから DirectInput / winmm のジョイスティックを隠す (二重入力防止) |
 | PostKeyMessages | 2 | キー入力メッセージも送る。0 = 送らない、1 = すべて、2 = F1～F12 のみ |
 | BackgroundInput | 0 | 1 = 窓が非アクティブでも入力を渡す |
@@ -95,6 +97,13 @@ CTRL LCTRL RCTRL ALT LALT RALT INSERT DELETE HOME END PGUP PGDN PAUSE NUM0`～`N
 | Path | (空) | CD の中身とみなすフォルダ (空欄 = ゲームフォルダ、相対パス可) |
 | Letter | (空) | ドライブ文字 (空欄 = Z から逆順に空いている文字) |
 | Label | (空) | ボリュームラベル |
+| Tracks | 20 | CD-DA: トラック数 (トラック 1 はデータ) |
+| TrackLengths | (空) | CD-DA: 各トラックの長さ (`分:秒` をカンマ区切り、トラック 1 から)。音楽ファイルがあるトラックはファイルの長さを使う |
+| AudioPath | (空) | CD-DA: 取り込んだ音楽ファイルのフォルダ。ほかに `CDDA` フォルダ、CD のフォルダ、ゲームフォルダも探す。ファイル名は `Track02.wav` `Track 02.mp3` `02.wma` など |
+| Volume | 100 | CD-DA: 音量 (0～100) |
+
+CD-DA は、ゲームが `mciSendCommand` で `cdaudio` を開く場合に MKWrap が受け持ちます (`mciSendString` の `open cdaudio` は未対応)。
+音楽ファイルが無いトラックは無音のまま、曲の長さが過ぎたら再生終了をゲームに通知します。
 
 ## [Patch]
 
@@ -116,6 +125,7 @@ CTRL LCTRL RCTRL ALT LALT RALT INSERT DELETE HOME END PGUP PGDN PAUSE NUM0`～`N
 | キー | 内容 |
 |---|---|
 | Log | 1 = `mkwrap.log` に記録。2 = さらに詳しく (GetProcAddress で解決した関数、メニュー構成、ファイルアクセスなど) |
+| KeepWorkDir | 1 = 起動時の作業フォルダを変えない (既定 0: ゲームのフォルダでなければゲームのフォルダに変更) |
 | TestInput | 自動テスト用の入力。`F2@4-4.3,F3@6-6.3,LEFT@8-10` (キー@開始秒-終了秒) |
 | TestButtons | 自動テスト用のパッド入力。`LB@10-12,DPadLeft@15-15.3` (ボタン名@開始秒-終了秒) |
 | MeasureIRQ | 1 = CPU エミュレータ DLL (Z80EMU / DLL6809) の割り込み要求回数を記録 (速度の調査用) |

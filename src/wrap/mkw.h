@@ -6,7 +6,7 @@
 #include <windows.h>
 #include <stdio.h>
 
-#define MKW_VERSION "1.6.10"
+#define MKW_VERSION "1.7.3"
 
 /* ---------------- 設定 ---------------- */
 typedef struct {
@@ -30,6 +30,8 @@ typedef struct {
     int    vsync;
     int    resizable;       /* 窓の大きさをマウスで変えられるようにする */
     int    movie;           /* MCI の動画: 0 = 再生できなければ飛ばす / 1 = そのまま / 2 = 常に飛ばす */
+    double mouse_speed_x, mouse_speed_y; /* 相対移動のマウス (ゲームがカーソルを中央に戻す) の速さ */
+    double mouse_div_x, mouse_div_y;     /* ゲームがマウスの移動量を割る値 (分かっている場合。0 = 不明) */
     int    bg_input;        /* 1 = ゲームが前面に無いときもキー・パッドの入力を渡す */
     int    keep_active;     /* 他のアプリに切り替えてもゲームには非アクティブを伝えない (止まらない) */
     int    dialog_dpi;      /* 0=ゲームと同じ 1=ダイアログは DPI 非対応として作る (Windows が拡大) */
@@ -77,6 +79,13 @@ void dsound_pause(int pause);
 void patch_vtbl(void *obj, int idx, void *fn, void **orig);
 void hooks_install(void);
 void patches_apply(void);
+const char *cd_map_path(const char *p, char *buf);   /* 仮想 CD のパス → 実際のパス (buf は MAX_PATH*2) */
+int mkw_movie_playing(void);
+/* CD-DA エミュレーション (cdda.c) */
+void cdda_init(char letter, const char *cdpath);
+int cdda_command(UINT id, UINT msg, DWORD_PTR fl, DWORD_PTR parm, DWORD *res);
+int cdda_device_id(LPCSTR name, UINT *out);
+int cdda_enabled(void);
 void *mkw_get_proc_override(HMODULE mod, const char *name); /* GetProcAddress 差し替え */
 
 /* ---------------- 窓の仮想化と表示 ---------------- */
@@ -99,6 +108,7 @@ typedef struct {
     DWORD  tid;            /* 窓を作ったスレッド */
     volatile LONG post_pending;
     int    framed;          /* 枠なし窓に枠を付けて窓表示している */
+    int    popup;           /* ゲームが枠なし (全画面前提) の窓として作った */
     volatile double next_post; /* 次に表示を依頼してよい時刻 (窓のスレッドを表示処理で埋めないため) */
     volatile LONG st_posts, st_presents; /* 統計: 依頼回数 / 実際の表示回数 */
     double st_ptime;

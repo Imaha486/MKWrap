@@ -44,12 +44,13 @@ static HANDLE flat_fallback(LPCSTR p, DWORD a, DWORD s, LPSECURITY_ATTRIBUTES sa
     static int nlog;
     if ((err != ERROR_PATH_NOT_FOUND && err != ERROR_FILE_NOT_FOUND) || !is_relative(p) || (c != OPEN_EXISTING && c != OPEN_ALWAYS)) return h;
     b = strrchr(p, '\\'); if (!b) b = strrchr(p, '/');
-    if (!b || !b[1]) return h;
+    if (!b) b = p - 1;   /* フォルダ無しのファイル名 (作業フォルダがゲームのフォルダでない場合) */
+    if (!b[1]) return h;
     if (!WideCharToMultiByte(CP_ACP, 0, g_gamedir, -1, dir, sizeof dir, NULL, NULL)) return h;
     _snprintf(alt, sizeof alt, "%s\\%s", dir, b + 1); alt[sizeof alt - 1] = 0;
     h2 = o_CreateFileA(alt, a, s, sa, c, f, t);
     if (h2 == INVALID_HANDLE_VALUE) { SetLastError(err); return h; }
-    if (nlog < 5) { nlog++; mkw_log("%s が見つからないため、ゲームのフォルダ直下の %s を開きました (フォルダ無しで展開されています。MKSetup 1.6.5 以降で展開し直すと解消します)\n", p, b + 1); }
+    if (nlog < 5) { nlog++; mkw_log("%s が見つからないため、ゲームのフォルダ直下の %s を開きました\n", p, b + 1); }
     return h2;
 }
 static HANDLE WINAPI fm_CreateFileA(LPCSTR p, DWORD a, DWORD s, LPSECURITY_ATTRIBUTES sa, DWORD c, DWORD f, HANDLE t)
@@ -113,6 +114,17 @@ void filemon_install(void)
 {
     void *o;
     GetCurrentDirectoryW(MAX_PATH, g_start_cwd);
+    /* ショートカットやランチャーから起動されると作業フォルダがゲームのフォルダでないことがある。
+     * 当時のゲームの多くは作業フォルダからデータを相対パスで開く (エクスプローラーから起動した前提) ため、ゲームのフォルダにする */
+    if (g_gamedir[0] && _wcsicmp(g_start_cwd, g_gamedir) && !GetPrivateProfileIntW(L"Debug", L"KeepWorkDir", 0, g_ini)) {
+        char a[MAX_PATH * 2], b[MAX_PATH * 2];
+        WideCharToMultiByte(CP_ACP, 0, g_start_cwd, -1, a, sizeof a, NULL, NULL);
+        WideCharToMultiByte(CP_ACP, 0, g_gamedir, -1, b, sizeof b, NULL, NULL);
+        if (SetCurrentDirectoryW(g_gamedir)) {
+            mkw_log("作業フォルダ %s をゲームのフォルダ %s に変更しました\n", a, b);
+            wcscpy(g_start_cwd, g_gamedir);
+        }
+    }
     o = iat_hook(g_exe, "kernel32.dll", "CreateFileA", (void *)fm_CreateFileA);
     {
         void *m = iat_hook(g_exe, "user32.dll", "MsgWaitForMultipleObjects", (void *)fm_MsgWait);
@@ -163,7 +175,7 @@ static DWORD WINAPI watchdog_thread(LPVOID p)
             bad = 0; dumped = 0;
             /* 窓は応答しているのに、ゲームが画面を更新しなくなった (Log=1 のとき 1 回だけ記録) */
             if ((g_cfg.log || g_cfg.keep_active) && !stall_done && g_mkw_frames > 0 && !IsIconic(w->hwnd)) {
-                if (g_mkw_frames == last_frames) {
+                if (g_mkw_frames == last_frames && !mkw_movie_playing()) {
                     if (++still == 8 && g_cfg.log) {
                         stall_done = 1;
                         filemon_report();
