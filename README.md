@@ -44,6 +44,7 @@
 | ロックマン DASH 鋼の冒険心 | rockman.exe | InstallShield 5 + CD のデータフォルダ (Dat / Sph / BGM) | なし (Direct3D 6 を MKWrap が描画) |
 | バブルボブル | bublbobl.exe | InstallShield 3 | 62.5Hz → 59.185Hz |
 | ガンスターヒーローズ (セガゲーム本舗) | GUNSTAR.exe | なし (CD から直接起動、フォルダをコピー) | 垂直同期 60Hz → 59.92Hz |
+| 真サムライスピリッツ 覇王丸地獄変 | SAMURAI2.EXE | なし (CD から直接起動、フォルダをコピー) | 16ms タイマー (62.5Hz) → 59.185Hz、仮想 CD・CD-DA |
 | バーチャコップ (Windows 版) | PPJDD.EXE | セガ PC (SSP.INI、フォルダをコピー) | なし (仮想 CD・CD-DA・Indeo 4 の動画) |
 
 未登録のタイトルや、割り当てがゲームと合わない場合は、ゲーム中に **Ctrl+F12** (またはパッドの LB+RB+Back を 1.5 秒押す) で

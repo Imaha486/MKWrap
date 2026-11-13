@@ -403,6 +403,10 @@ static int app_foreground(void)
 static SHORT WINAPI hk_GetAsyncKeyState(int vk)
 {
     SHORT r;
+    if (g_cfg.log >= 2) {   /* ゲームが調べるキーを 1 回ずつ記録 (キー割り当ての調査用) */
+        static BYTE seen[256];
+        if (!seen[vk & 255]) { seen[vk & 255] = 1; mkw_log("GetAsyncKeyState: キー 0x%02X を調べています\n", vk & 255); }
+    }
     if (!app_foreground() && !(vk >= VK_LBUTTON && vk <= VK_XBUTTON2)) return 0;
     r = r_GetAsyncKeyState(vk);
     if (input_vk_down(vk & 255)) r |= (SHORT)0x8000;

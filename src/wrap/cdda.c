@@ -16,6 +16,7 @@
 
 static int g_on, g_ntr = 20;
 static DWORD g_len[MAXTR + 1];          /* ms */
+static char g_len_set[MAXTR + 1];       /* TrackLengths で指定された (ゲームが CD の確認に使うことがあるので、ファイルの長さで上書きしない) */
 static char g_file[MAXTR + 1][MAX_PATH];
 static char g_alias[64];
 static DWORD g_tfmt = MCI_FORMAT_MSF;
@@ -43,7 +44,10 @@ static DWORD fmt_out(DWORD ms_abs, int track_rel_tr, int as_length)
 {
     DWORD m, s, f;
     if (g_tfmt == MCI_FORMAT_MILLISECONDS) return ms_abs;
-    m = ms_abs / 60000; s = (ms_abs / 1000) % 60; f = (ms_abs % 1000) * 75 / 1000;
+    {   /* ms → 1/75 秒 (フレーム)。TrackLengths のフレーム指定がずれないよう四捨五入 */
+        DWORD fr = (DWORD)(((unsigned long long)ms_abs * 75 + 500) / 1000);
+        m = fr / 4500; s = (fr / 75) % 60; f = fr % 75;
+    }
     if (g_tfmt == MCI_FORMAT_TMSF && !as_length) return MCI_MAKE_TMSF(track_rel_tr, m, s, f);
     return MCI_MAKE_MSF(m, s, f);
 }
@@ -76,7 +80,7 @@ static DWORD WINAPI worker(LPVOID p)
     (void)p;
     {   /* 取り込んだ音楽ファイルの長さ */
         int t;
-        for (t = 2; t <= g_ntr; t++) if (g_file[t][0]) { DWORD l = file_len_ms(g_file[t]); if (l) g_len[t] = l; else mkw_log("CD-DA: %s の長さを調べられません\n", g_file[t]); }
+        for (t = 2; t <= g_ntr; t++) if (g_file[t][0] && !g_len_set[t]) { DWORD l = file_len_ms(g_file[t]); if (l) g_len[t] = l; else mkw_log("CD-DA: %s の長さを調べられません\n", g_file[t]); }
         SetEvent(g_ready);
     }
     for (;;) {
@@ -134,7 +138,7 @@ static DWORD file_len_ms(const char *path)
     return len;
 }
 
-static void find_files(const char *dir)
+static void find_files(const char *dir, int any_name)
 {
     static const char *pat[] = { "Track%02d.%s", "Track %02d.%s", "track%02d.%s", "%02d.%s", "Track%d.%s", NULL };
     static const char *ext[] = { "wav", "mp3", "wma", NULL };
@@ -147,6 +151,26 @@ static void find_files(const char *dir)
             _snprintf(full, sizeof full, "%s\\%s", dir, name); full[MAX_PATH - 1] = 0;
             if (GetFileAttributesA(full) != INVALID_FILE_ATTRIBUTES) strcpy(g_file[t], full);
         }
+    }
+    if (any_name) {   /* そのほか、名前の末尾がトラック番号のファイル (音楽用のフォルダのみ) (「samurai2_02.mp3」「Disc 02.wav」など) */
+        WIN32_FIND_DATAA fd; HANDLE h; char pat2[MAX_PATH];
+        _snprintf(pat2, sizeof pat2, "%s\\*.*", dir); pat2[sizeof pat2 - 1] = 0;
+        h = FindFirstFileA(pat2, &fd);
+        if (h == INVALID_HANDLE_VALUE) return;
+        do {
+            char *dot = strrchr(fd.cFileName, '.'), *q; int n;
+            if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || !dot) continue;
+            for (e = 0; ext[e]; e++) if (!_stricmp(dot + 1, ext[e])) break;
+            if (!ext[e]) continue;
+            q = dot;
+            while (q > fd.cFileName && q[-1] >= '0' && q[-1] <= '9') q--;
+            if (q == dot || dot - q > 3) continue;
+            if (q > fd.cFileName && q[-1] != '_' && q[-1] != ' ' && q[-1] != '-' && q[-1] != '(' && q[-1] != '#') continue;
+            n = atoi(q);
+            if (n < 2 || n > g_ntr || g_file[n][0]) continue;
+            _snprintf(g_file[n], MAX_PATH, "%s\\%s", dir, fd.cFileName); g_file[n][MAX_PATH - 1] = 0;
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
     }
 }
 
@@ -167,9 +191,13 @@ void cdda_init(char letter, const char *cdpath)
         char *s = a, *tok; t = 1;
         while ((tok = strtok(s, ", ")) && t <= g_ntr) {
             int m = 0, sec = 0; s = NULL;
-            if (sscanf(tok, "%d:%d", &m, &sec) == 2) g_len[t] = (DWORD)(m * 60 + sec) * 1000;
+            int fr = 0;
+            if (sscanf(tok, "%d:%d:%d", &m, &sec, &fr) == 3)   /* 分:秒:フレーム (1/75 秒。CUE シートと同じ) */
+                g_len[t] = (DWORD)((((unsigned long long)(m * 60 + sec) * 75 + fr) * 1000 + 37) / 75);
+            else if (sscanf(tok, "%d:%d", &m, &sec) == 2) g_len[t] = (DWORD)(m * 60 + sec) * 1000;
             else g_len[t] = (DWORD)atoi(tok) * 1000;
             if (!g_len[t]) g_len[t] = 1000;
+            g_len_set[t] = 1;
             t++;
         }
     }
@@ -180,11 +208,11 @@ void cdda_init(char letter, const char *cdpath)
     if (a[0]) {
         char d[MAX_PATH];
         if (a[1] == ':' || (a[0] == '\\' && a[1] == '\\')) strcpy(d, a); else _snprintf(d, sizeof d, "%s\\%s", gd, a);
-        find_files(d);
+        find_files(d, 1);
     }
-    { char d[MAX_PATH]; _snprintf(d, sizeof d, "%s\\CDDA", gd); find_files(d); }
-    find_files(cdpath);
-    find_files(gd);
+    { char d[MAX_PATH]; _snprintf(d, sizeof d, "%s\\CDDA", gd); find_files(d, 1); }
+    find_files(cdpath, 0);
+    find_files(gd, 0);
     for (t = 2; t <= g_ntr; t++) if (g_file[t][0]) nfile++;
     /* ファイルの長さは worker スレッドで調べる (ここは DLL の初期化中で MCI を使えない) */
     g_ready = CreateEventA(NULL, TRUE, nfile ? FALSE : TRUE, NULL);
@@ -315,6 +343,8 @@ int cdda_command(MCIDEVICEID id, UINT msg, DWORD_PTR fl, DWORD_PTR parm, MCIERRO
         case MCI_CDA_STATUS_TYPE_TRACK: s->dwReturn = tr == 1 ? MCI_CDA_TRACK_OTHER : MCI_CDA_TRACK_AUDIO; break;
         default: s->dwReturn = 0; break;
         }
+        if (g_cfg.log) mkw_log("CD-DA: STATUS 項目 %lu%s%d → %lu (0x%lX)\n", (unsigned long)s->dwItem, (fl & MCI_TRACK) ? " トラック " : "", (fl & MCI_TRACK) ? (int)s->dwTrack : 0,
+                               (unsigned long)s->dwReturn, (unsigned long)s->dwReturn);
         break; }
     case MCI_GETDEVCAPS: {
         MCI_GETDEVCAPS_PARMS *g = (MCI_GETDEVCAPS_PARMS *)parm;

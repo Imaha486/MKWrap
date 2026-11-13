@@ -6,7 +6,7 @@
 #include <windows.h>
 #include <stdio.h>
 
-#define MKW_VERSION "1.7.3"
+#define MKW_VERSION "1.8.0"
 
 /* ---------------- 設定 ---------------- */
 typedef struct {

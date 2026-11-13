@@ -214,6 +214,8 @@ static int copy_tree(const wchar_t *src, const wchar_t *dst, int top, int *count
         wchar_t s2[MAX_PATH * 2], d2[MAX_PATH * 2];
         if (fd.cFileName[0] == L'.' && (!fd.cFileName[1] || (fd.cFileName[1] == L'.' && !fd.cFileName[2]))) continue;
         if (top && msi_skip(fd.cFileName)) continue;
+        /* CD の DirectX のインストーラは不要 (今の Windows には入れられない) */
+        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !_wcsnicmp(fd.cFileName, L"directx", 7)) continue;
         mk_path_join(s2, MAX_PATH * 2, src, fd.cFileName);
         mk_path_join(d2, MAX_PATH * 2, dst, fd.cFileName);
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) { if (copy_tree(s2, d2, 0, count)) err++; }

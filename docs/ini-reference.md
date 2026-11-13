@@ -98,8 +98,8 @@ CTRL LCTRL RCTRL ALT LALT RALT INSERT DELETE HOME END PGUP PGDN PAUSE NUM0`～`N
 | Letter | (空) | ドライブ文字 (空欄 = Z から逆順に空いている文字) |
 | Label | (空) | ボリュームラベル |
 | Tracks | 20 | CD-DA: トラック数 (トラック 1 はデータ) |
-| TrackLengths | (空) | CD-DA: 各トラックの長さ (`分:秒` をカンマ区切り、トラック 1 から)。音楽ファイルがあるトラックはファイルの長さを使う |
-| AudioPath | (空) | CD-DA: 取り込んだ音楽ファイルのフォルダ。ほかに `CDDA` フォルダ、CD のフォルダ、ゲームフォルダも探す。ファイル名は `Track02.wav` `Track 02.mp3` `02.wma` など |
+| TrackLengths | (空) | CD-DA: 各トラックの長さ (`分:秒` または `分:秒:フレーム` をカンマ区切り、トラック 1 から。フレームは 1/75 秒で CUE シートと同じ)。指定の無いトラックは音楽ファイルの長さを使う |
+| AudioPath | (空) | CD-DA: 取り込んだ音楽ファイルのフォルダ。ほかに `CDDA` フォルダ、CD のフォルダ、ゲームフォルダも探す。ファイル名は `Track02.wav` `Track 02.mp3` `02.wma` など。`CDDA` と AudioPath のフォルダでは `samurai2_02.mp3` のように名前の末尾がトラック番号のファイルも使う |
 | Volume | 100 | CD-DA: 音量 (0～100) |
 
 CD-DA は、ゲームが `mciSendCommand` で `cdaudio` を開く場合に MKWrap が受け持ちます (`mciSendString` の `open cdaudio` は未対応)。
